@@ -12,7 +12,8 @@ final class SystemStats {
         var charging = false
         var cycleCount = 0
         var health = 0.0         // 0...1(最大容量/设计容量)
-        var watts = 0.0          // 实时功率 W
+        var watts = 0.0          // 实时功率绝对值 W
+        var chargeIn = false     // true=充入(正向电流),false=放出
     }
 
     struct ProcUsage {
@@ -39,6 +40,9 @@ final class SystemStats {
         let gpuUsage: Int?          // GPU 占用 %(Apple Silicon;Intel 无 IOGPUDevice 时为 nil)
         let netInTotal: UInt64      // 网卡累计字节(流量日统计用)
         let netOutTotal: UInt64
+        let swapUsed: UInt64        // 交换分区已用字节
+        let swapTotal: UInt64
+        let memFreePercent: Double  // 可立即回收内存占比(free+inactive+purgeable)
     }
 
     private var lastCoreBusy: [UInt64] = []
@@ -84,6 +88,8 @@ final class SystemStats {
 
         // 内存
         let memUsed = sampleMemoryUsed()
+        let memFreePct = sampleMemoryFreePercent()
+        let (swapUsed, swapTotal) = sampleSwap()
 
         // 网速
         let (inBytes, outBytes) = sampleNetworkBytes()
@@ -117,7 +123,8 @@ final class SystemStats {
                         diskTotal: diskTotal, diskUsed: diskUsed,
                         diskRead: diskRead, diskWrite: diskWrite,
                         battery: battery, topProcs: topCPU, topMemProcs: topMem,
-                        gpuUsage: gpu, netInTotal: lastNetIn, netOutTotal: lastNetOut)
+                        gpuUsage: gpu, netInTotal: lastNetIn, netOutTotal: lastNetOut,
+                        swapUsed: swapUsed, swapTotal: swapTotal, memFreePercent: memFreePct)
     }
 
     // MARK: - CPU(host_processor_info,每核 user+system+nice 为忙时)
@@ -163,6 +170,39 @@ final class SystemStats {
         let wired = UInt64(vm.wire_count) * pageSize
         let compressed = UInt64(vm.compressor_page_count) * pageSize
         return active + wired + compressed
+    }
+
+    /// 可立即回收内存占比(free + inactive + purgeable)—— 衡量"内存压力"更直观
+    private func sampleMemoryFreePercent() -> Double {
+        guard memTotalCache > 0 else { return 1 }
+        var vm = vm_statistics64_data_t()
+        var cnt = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &vm) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(cnt)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &cnt)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 1 }
+        let freePages = UInt64(vm.free_count) + UInt64(vm.inactive_count) + UInt64(vm.purgeable_count)
+        let total = memTotalCache / pageSize
+        return total > 0 ? min(1, Double(freePages) / Double(total)) : 1
+    }
+
+    /// 交换分区用量(sysctl vm.swapusage,字符串形如 "total = 6144.00M  used = 5058.19M  free = …")
+    private func sampleSwap() -> (used: UInt64, total: UInt64) {
+        var buf = [CChar](repeating: 0, count: 256)
+        var size = buf.count
+        guard sysctlbyname("vm.swapusage", &buf, &size, nil, 0) == 0 else { return (0, 0) }
+        let s = String(cString: buf) as NSString
+        func grab(_ key: String) -> UInt64 {
+            let range = s.range(of: key)
+            guard range.location != NSNotFound else { return 0 }
+            let rest = s.substring(from: range.location + range.length)
+            let num = rest.prefix { $0.isNumber || $0 == "." }
+            guard let v = Double(num) else { return 0 }
+            return UInt64(v * 1_048_576)   // 输出单位恒为 M
+        }
+        return (grab("used = "), grab("total = "))
     }
 
     // MARK: - 网络字节(sysctl NET_RT_IFLIST2,64 位计数器;只统计 en*/ppp* 物理接口,避免 utun 重复计数)
@@ -260,7 +300,11 @@ final class SystemStats {
             if ratio > 0.2 && ratio < 1.05 { info.health = ratio }
         }
         if let amps = intProp("Amperage"), let volts = intProp("Voltage") {
-            info.watts = Double(abs(amps)) * Double(volts) / 1_000_000
+            // Amperage 为带符号 mA(负=放电);mA×mV = µW
+            let signed = Int64(truncatingIfNeeded: amps)
+            let w = Double(signed) * Double(volts) / 1_000_000
+            info.watts = abs(w)
+            info.chargeIn = signed > 0
         }
         return info
     }

@@ -70,3 +70,112 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(patch.curves?["1"]?.last?.rpm, 5700)
     }
 }
+
+final class NightAndPowerTests: XCTestCase {
+
+    /// 指定日期时刻的便捷构造
+    private func at(_ h: Int, _ m: Int) -> Date {
+        var c = DateComponents()
+        c.year = 2026; c.month = 10; c.day = 23; c.hour = h; c.minute = m
+        return Calendar.current.date(from: c)!
+    }
+
+    func testNightWindowAcrossMidnight() {
+        var nm = NightMode()
+        nm.enabled = true
+        nm.start = 23 * 60   // 23:00
+        nm.end = 7 * 60      // 07:00
+        XCTAssertTrue(nm.windowActive(now: at(23, 59)), "23:59 应在窗口内")
+        XCTAssertTrue(nm.windowActive(now: at(0, 30)), "00:30 应在窗口内")
+        XCTAssertTrue(nm.windowActive(now: at(6, 59)), "06:59 应在窗口内")
+        XCTAssertFalse(nm.windowActive(now: at(7, 0)), "07:00 应离开窗口")
+        XCTAssertFalse(nm.windowActive(now: at(12, 0)), "中午不在窗口")
+        XCTAssertFalse(nm.windowActive(now: at(22, 59)), "22:59 还没进窗口")
+    }
+
+    func testNightWindowSameDay() {
+        var nm = NightMode()
+        nm.enabled = true
+        nm.start = 13 * 60   // 13:00
+        nm.end = 15 * 60     // 15:00
+        XCTAssertTrue(nm.windowActive(now: at(13, 0)))
+        XCTAssertTrue(nm.windowActive(now: at(14, 30)))
+        XCTAssertFalse(nm.windowActive(now: at(12, 59)))
+        XCTAssertFalse(nm.windowActive(now: at(15, 0)))
+    }
+
+    func testNightWindowDisabled() {
+        var nm = NightMode()
+        nm.enabled = false
+        nm.start = 0
+        nm.end = 24 * 60 - 1
+        XCTAssertFalse(nm.windowActive(now: at(12, 0)), "未启用时任何时刻都不生效")
+    }
+
+    func testPresetRange() {
+        XCTAssertEqual(Config.presetRange("quiet").start, 80)
+        XCTAssertEqual(Config.presetRange("quiet").full, 100)
+        XCTAssertEqual(Config.presetRange("turbo").full, 85)
+        XCTAssertEqual(Config.presetRange("unknown").full, 95, "未知预设回落到均衡")
+    }
+
+    func testEffectiveCurvesBatterySwitch() {
+        var cfg = Config()
+        cfg.curves = ["0": [CurvePoint(temp: 55, rpm: 1500), CurvePoint(temp: 95, rpm: 5700)]]
+        cfg.batteryCurves = ["0": [CurvePoint(temp: 75, rpm: 1500), CurvePoint(temp: 105, rpm: 5700)]]
+        let noon = at(12, 0)
+        // 插电:用常规曲线
+        XCTAssertEqual(cfg.effectiveCurves(onAC: true, now: noon), cfg.curves)
+        // 电池:切换到电池曲线
+        XCTAssertEqual(cfg.effectiveCurves(onAC: false, now: noon), cfg.batteryCurves)
+    }
+
+    func testEffectiveCurvesBatteryEmptyFallsBack() {
+        var cfg = Config()
+        cfg.curves = ["0": [CurvePoint(temp: 55, rpm: 1500), CurvePoint(temp: 95, rpm: 5700)]]
+        XCTAssertEqual(cfg.effectiveCurves(onAC: false), cfg.curves, "电池曲线未设置沿用常规曲线")
+    }
+
+    func testEffectiveCurvesNightOverridesAll() {
+        var cfg = Config()
+        cfg.curves = ["0": [CurvePoint(temp: 55, rpm: 1500), CurvePoint(temp: 95, rpm: 5700)]]
+        cfg.batteryCurves = ["0": [CurvePoint(temp: 75, rpm: 1500), CurvePoint(temp: 105, rpm: 5700)]]
+        var nm = NightMode()
+        nm.enabled = true
+        nm.start = 0
+        nm.end = 23 * 60 + 59
+        cfg.nightMode = nm
+        // 夜间窗口内:忽略两套曲线(走预设两点),无论插不插电
+        XCTAssertEqual(cfg.effectiveCurves(onAC: true, now: at(12, 0)), [:])
+        XCTAssertEqual(cfg.effectiveCurves(onAC: false, now: at(12, 0)), [:])
+        XCTAssertTrue(cfg.nightActive(now: at(12, 0)))
+    }
+
+    func testNightModeDecodeLegacyAndPatch() throws {
+        // 旧配置无 nightMode 字段
+        let legacy = try JSONDecoder().decode(Config.self,
+                                              from: Data("{\"enabled\":true}".utf8))
+        XCTAssertNil(legacy.nightMode)
+
+        // 补丁解析
+        let patch = ConfigPatch(from: ["nightMode": ["enabled": true, "start": 1380, "end": 420, "preset": "turbo"]])
+        XCTAssertEqual(patch.nightMode?.start, 1380)
+        XCTAssertEqual(patch.nightMode?.preset, "turbo")
+
+        // 应用补丁 + 编解码往返
+        var cfg = Config()
+        cfg.apply(patch: patch)
+        XCTAssertEqual(cfg.nightMode?.end, 420)
+        let back = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(cfg))
+        XCTAssertEqual(back.nightMode?.preset, "turbo")
+    }
+
+    func testBatteryCurvesPatchAndRoundTrip() throws {
+        let patch = ConfigPatch(from: ["batteryCurves": ["0": [[75.0, 1500.0], [105.0, 5700.0]]]])
+        var cfg = Config()
+        cfg.apply(patch: patch)
+        XCTAssertEqual(cfg.batteryCurves["0"]?.count, 2)
+        let back = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(cfg))
+        XCTAssertEqual(back.batteryCurves["0"]?.first?.temp, 75)
+    }
+}

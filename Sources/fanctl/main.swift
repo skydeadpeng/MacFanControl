@@ -1,4 +1,5 @@
 import Foundation
+import IOKit.ps
 import SMCKit
 
 // ============================================================
@@ -363,6 +364,8 @@ final class Daemon {
     private var peakTemp: [Int: Double] = [:]        // 回滞用:触发当前转速的温度峰值
     private var controlTemp: Double = 0
     private var server: JSONLineServer?
+    private var onAC = true                          // 电源状态(电池时切换 batteryCurves)
+    private var lastNightActive = false
 
     init() {
         do {
@@ -461,6 +464,20 @@ final class Daemon {
         }
         controlTemp = live > 0 ? live : Self.controlTemperature(temps: tempCache, config: cfg)
 
+        // 电源/夜间状态跟踪(切换时记日志,便于回查"为什么转速变了")
+        let ac = Self.readACPower()
+        if ac != onAC {
+            onAC = ac
+            logger.log(ac ? "电源:已接入电源适配器" : "电源:切换到电池\(cfg.batteryCurves.isEmpty ? "(沿用常规曲线)" : ",启用电池曲线")")
+        }
+        let night = cfg.nightActive()
+        if night != lastNightActive {
+            lastNightActive = night
+            if let nm = cfg.nightMode {
+                logger.log("夜间模式\(night ? "生效(\(nm.timeText) 预设 \(nm.preset))" : "结束")")
+            }
+        }
+
         // 已停用:确保释放控制,其余只上报
         guard cfg.enabled, !fans.isEmpty else {
             if writer.holdingCount > 0 {
@@ -474,12 +491,29 @@ final class Daemon {
         controlled = applyControl(writer: writer, config: cfg, fans: fans)
     }
 
+    /// 是否使用外接电源(无电池信息时按有电处理)
+    static func readACPower() -> Bool {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef] else {
+            return true
+        }
+        for src in list {
+            guard let desc = IOPSGetPowerSourceDescription(snapshot, src)?.takeUnretainedValue()
+                    as? [String: Any],
+                  let state = desc[kIOPSPowerSourceStateKey as String] as? String else { continue }
+            return state == kIOPSACPowerValue as String
+        }
+        return true
+    }
+
     /// 计算并写入各风扇目标转速。
     /// 验证是被动式的:下一轮读回 F%dTg 与上轮写入一致即视为生效;
     /// 若被系统改写(thermalmonitord 抢写)则本轮重写。
     /// 降温方向带 1.5°C 回滞:温度未真正回落前维持转速,避免阈值附近抖动。
     private func applyControl(writer: FanWriter, config cfg: Config, fans: [FanInfo]) -> Bool {
         let force = !controlled   // 上一轮未生效则本轮强制重写
+        let activeCurves = config.effectiveCurves(onAC: onAC)
+        let night = config.nightActive()
         for f in fans {
             if let w = lastWritten[f.index] {
                 let stuck = abs(f.target - w) < max(100, w * 0.05)
@@ -489,7 +523,12 @@ final class Daemon {
             var target: Double
             if cfg.mode == "manual" {
                 target = min(max(cfg.manualRPM["\(f.index)"] ?? floor, 500), f.max)
-            } else if let curve = cfg.curves["\(f.index)"], curve.count >= 2 {
+            } else if night {
+                // 夜间窗口:忽略自定义曲线,直接用预设两点(安静优先,温度过高仍会拉满)
+                let p = Config.presetRange(cfg.nightMode?.preset ?? "quiet")
+                target = FanCurve.target(temp: controlTemp, tempStart: p.start, tempFull: p.full,
+                                         lo: floor, hi: f.max)
+            } else if let curve = activeCurves["\(f.index)"], curve.count >= 2 {
                 target = min(max(FanCurve.target(points: curve, temp: controlTemp), 500), f.max)
             } else {
                 target = FanCurve.target(temp: controlTemp,
@@ -618,6 +657,8 @@ final class Daemon {
             "controlled": controlled,
             "holding": writer?.holdingCount ?? 0,
             "controlTemp": controlTemp,
+            "onAC": onAC,
+            "nightActive": lastNightActive,
             "temps": tempsDict,
             "sensorsSelected": Self.controlTemperature(temps: temps, config: cfg) > 0
                 ? (cfg.sensors ?? SMC.defaultControlSensors(for: temps.map(\.key)))

@@ -16,16 +16,20 @@
 
 **Fan control**
 - Multi-point temperature curves per fan (piecewise linear, editable UI)
+- **Separate AC / battery curves** — auto-switch when you unplug, one-click copy
+- **Night schedule** — preset curve within a time window (e.g. 23:00–07:00)
 - Manual RPM mode, one-click full speed, 3 presets (Quiet / Balanced / Turbo)
+- **Fan failure alert** — notification when RPM drops to ~0 while target is high
 - Choose which sensors drive the curve (max value), full sensor browser
 - Safety clamps, passive write verification, 1.5 °C hysteresis anti-flapping
 - M1/M2 direct writes, M3/M4 automatic `Ftst` unlock, M5 lowercase keys, Intel legacy path
 
 **System monitoring**
 - CPU (total + per-core bars + Top 5 processes with kill-on-right-click, memory ranking)
-- Memory, battery (health/cycles/watts/charge alerts), disk (space + I/O speed)
-- Network speed + daily traffic, 15-min history charts, today's high/low temps
-- GPU utilization (Apple Silicon), high-temp notifications
+- Memory (+ pressure level & swap warning), battery (health/cycles/live watts/daily Wh/charge alerts), disk
+- Network speed + daily traffic, 15-min history charts, **today's peaks** (temp/CPU/watts)
+- 7-day hourly trends (temp/CPU/GPU), **CSV export**, GPU utilization, high-temp notifications
+- **Customizable menu-bar title**: temp / CPU / GPU / memory / net / battery / watts
 
 **Extras**
 - Version check against GitHub Releases, one-click diagnostics export
