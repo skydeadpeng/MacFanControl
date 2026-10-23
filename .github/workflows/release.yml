@@ -7,14 +7,24 @@ on:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Run unit tests
-        run: swift test
+        run: |
+          set +e
+          swift test 2> /tmp/test-errors.txt
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "# ❌ swift test 失败(退出码 $code)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "error|warning" -A2 /tmp/test-errors.txt | head -80 >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
       - name: Build universal binaries
         run: |
@@ -22,9 +32,7 @@ jobs:
           swift build -c release --arch arm64 --arch x86_64 --product fanctl
 
       - name: Package DMG
-        run: |
-          sed -i '' 's|cp build-resources/AppIcon.icns|cp build-resources/AppIcon.icns|' package-dist.sh
-          ./package-dist.sh
+        run: ./package-dist.sh
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
