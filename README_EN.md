@@ -31,6 +31,12 @@
 - 7-day hourly trends (temp/CPU/GPU), **CSV export**, GPU utilization, high-temp notifications
 - **Customizable menu-bar title**: temp / CPU / GPU / memory / net / battery / watts
 
+**Desktop widgets (macOS 14+)**
+- Right-click desktop → Edit Widgets → search "FanBar"
+- Small "Temp & Fan": big live temperature (color-coded) + fan RPM + CPU%
+- Medium "System Overview": temp / fan / CPU / memory / network / battery in one glance
+- Auto-refresh ~1 min while FanBar runs; 5-min system fallback
+
 **Extras**
 - Version check against GitHub Releases, one-click diagnostics export
 - Crash auto-recovery (LaunchAgent), watchdog self-healing daemon, bilingual UI (中/EN)

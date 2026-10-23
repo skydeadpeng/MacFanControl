@@ -15,6 +15,11 @@ cp .build/release/FanBar "$APP/Contents/MacOS/FanBar"
 cp .build/release/fanctl "$APP/Contents/Resources/fanctl"
 chmod +x "$APP/Contents/MacOS/FanBar" "$APP/Contents/Resources/fanctl"
 
+# 桌面小组件(macOS 14+;低版本系统只是不显示,不影响主程序)
+./tools/build-widget.sh
+mkdir -p "$APP/Contents/PlugIns"
+cp -R build/widget/FanWidget.appex "$APP/Contents/PlugIns/"
+
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,7 +30,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleDisplayName</key><string>MacFanControl 风扇控制</string>
     <key>CFBundleExecutable</key><string>FanBar</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>2.2</string>
+    <key>CFBundleShortVersionString</key><string>3.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
@@ -37,7 +42,9 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 EOF
 
 # 优先用固定证书签名(TCC 授权才能跨构建保持),证书不存在则退回临时签名
+# 注意顺序:先签内嵌小组件,再签外层 app
 cp build-resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+codesign --force --sign "Local Dev Tools" "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || codesign --force --sign - "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || true
 codesign --force --sign "Local Dev Tools" "$APP" >/dev/null 2>&1 || codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 
 echo ""

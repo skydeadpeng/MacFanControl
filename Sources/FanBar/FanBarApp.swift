@@ -3,6 +3,7 @@ import AppKit
 import Charts
 import Combine
 import UserNotifications
+import WidgetKit
 import SMCKit
 
 // MARK: - 数据模型
@@ -96,6 +97,7 @@ final class FanModel: ObservableObject {
     private let stats = SystemStats()
     private var timer: Timer?
     private var refreshing = false
+    private var widgetReloadCounter = 0
 
     /// 菜单栏标题(按自选指标组合渲染;temp/cpu/gpu/mem/net/battery/power)
     var statusText: String {
@@ -234,6 +236,11 @@ final class FanModel: ObservableObject {
         sys = s
         accumulateTraffic(s)
         checkBattery(s.battery)
+        // 桌面小组件:FanBar 在前台运行时约每分钟推一次新数据
+        widgetReloadCounter += 1
+        if widgetReloadCounter % 40 == 0 {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
         guard !refreshing else { return }
         refreshing = true
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in

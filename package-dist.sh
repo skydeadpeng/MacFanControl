@@ -2,7 +2,7 @@
 # 打包分发版:通用二进制(Apple Silicon + Intel)+ DMG 安装包
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="2.2"
+VERSION="3.0"
 
 echo "==> 编译通用二进制(arm64 + x86_64)…"
 swift build -c release --arch arm64 --arch x86_64 --product FanBar
@@ -44,19 +44,33 @@ EOF
 sed -i '' "s/VERSION_PLACEHOLDER/$VERSION/" "$APP/Contents/Info.plist"
 
 cp build-resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+
+# 桌面小组件(macOS 14+)
+WIDGET_VERSION="$VERSION" ./tools/build-widget.sh
+mkdir -p "$APP/Contents/PlugIns"
+cp -R build/widget/FanWidget.appex "$APP/Contents/PlugIns/"
+
+# 先签内嵌小组件,再签外层 app
+codesign --force --sign "Local Dev Tools" "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || codesign --force --sign - "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || true
 codesign --force --sign "Local Dev Tools" "$APP" >/dev/null 2>&1 || codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 
 echo "==> 架构检查"
 lipo -info "$APP/Contents/MacOS/FanBar"
 
 cat > "$DIST/使用说明.txt" <<'EOF'
-MacFanControl 风扇控制 v2.2 —— 免费开源的 Mac 风扇温度控制与系统监控
+MacFanControl 风扇控制 v3.0 —— 免费开源的 Mac 风扇温度控制与系统监控
 
 【安装】
 1. 把 FanBar.app 拖到"应用程序"文件夹
 2. 首次打开:如果提示"无法验证开发者",在图标上右键 → 打开 → 再点"打开"
    (自制软件没有苹果商店认证,属正常现象,只需一次)
 3. 菜单栏出现温度图标即成功
+
+【新增:桌面小组件(macOS 14+)】
+桌面右键 → 编辑小组件 → 搜索 "FanBar":
+- 「温度与风扇」小部件:大字号温度 + 风扇转速 + CPU
+- 「系统概览」中部件:温度/风扇/CPU/内存/网速/电池 一屏总览
+FanBar 运行时约每分钟自动刷新;系统兜底每 5 分钟刷新一次。
 
 【功能】
 - 菜单栏标题自定义:温度/CPU/GPU/内存/网速/电池/功率任意组合(面板里勾选)
