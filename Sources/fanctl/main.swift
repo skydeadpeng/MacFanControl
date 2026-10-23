@@ -351,6 +351,7 @@ final class Daemon {
     private let startedAt = Date()
     private let lock = NSLock()
     private var ready = false
+    private var lastTickEnd = Date()   // 看门狗心跳:SMC 调用可能永久卡死,超时自杀等 launchd 拉起
 
     private var controlled = false
     private var lastWritten: [Int: Double] = [:]
@@ -379,6 +380,21 @@ final class Daemon {
             logger.log("警告: 非 root 运行(测试模式),风扇写入将失败")
         }
 
+        // 看门狗先行(初始化/任意 tick 卡死即退出,launchd KeepAlive 负责拉起)
+        lastTickEnd = Date()
+        Thread.detachNewThread { [weak self] in
+            while !gQuit {
+                Thread.sleep(forTimeInterval: 10)
+                guard let self else { return }
+                let stale = Date().timeIntervalSince(self.lastTickEnd)
+                let limit = self.locked { max(self.config.interval * 3, 20) + 10 }
+                if stale > limit {
+                    self.logger.log(String(format: "看门狗: 心跳停摆 %.0f 秒(SMC 调用卡死),自杀重启", stale))
+                    exit(1)
+                }
+            }
+        }
+
         // 先把 socket 起来,让 GUI 立刻能连上(初始化期间返回 starting 状态),
         // 避免 GUI 误判"未安装"而诱导反复重装输密码
         do {
@@ -405,6 +421,7 @@ final class Daemon {
         while !gQuit {
             let interval: Double = locked { config.interval }
             locked { tickLocked() }
+            locked { lastTickEnd = Date() }
             let deadline = Date().addingTimeInterval(interval)
             while !gQuit && Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.2)
