@@ -8,17 +8,34 @@ public struct SensorReading {
 }
 
 public enum SensorNames {
-    /// 常见键的中文名;未收录的按前缀推断,再退回原始键名
+    /// 常见键的中文名(社区数据整理,覆盖 Apple Silicon 与主流 Intel 机型);未收录的按前缀推断
     static let known: [String: String] = [
+        // CPU(Apple Silicon 簇/峰值/邻近)
+        "TCMz": "CPU 峰值", "TCMb": "CPU 平均", "TCMc": "CPU P核峰值",
+        // CPU(Intel 经典)
         "TC0P": "CPU 邻近", "TC0D": "CPU 核心", "TC0E": "CPU 核心", "TC0F": "CPU 核心",
-        "TC0H": "CPU 散热片",
-        "TCMz": "CPU 峰值", "TCMb": "CPU 平均",
-        "TG0P": "GPU 邻近", "TG0D": "GPU 核心", "TG0H": "GPU 散热片", "TG1D": "GPU 2 核心",
-        "Tm0P": "内存", "TMVR": "内存 VRM", "Ts0S": "掌托左", "Ts1S": "掌托右",
-        "TaLP": "环境", "TAOL": "环境", "TB0T": "电池 1", "TB1T": "电池 2", "TB2T": "电池 3",
-        "TN0D": "北桥", "TP0P": "电源", "TA0p": "环境",
-        "TH0a": "出风口 a", "TH0b": "出风口 b", "TH1a": "出风口 c", "TH1b": "出风口 d",
-        "TM0A": "内存 A", "TW0P": "Airport 卡",
+        "TC0H": "CPU 散热片", "TC0C": "CPU 核心", "TC1C": "CPU 核心1", "TC2C": "CPU 核心2",
+        "TC3C": "CPU 核心3", "TC4C": "CPU 核心4", "TC5C": "CPU 核心5", "TC6C": "CPU 核心6",
+        "TC7C": "CPU 核心7", "TC8C": "CPU 核心8", "TCSA": "CPU 系统代理",
+        // GPU
+        "TG0P": "GPU 邻近", "TG0D": "GPU 核心", "TG0H": "GPU 散热片", "TG1D": "GPU2 核心",
+        "TG1P": "GPU2 邻近",
+        // 内存/主板
+        "Tm0P": "内存", "TM0P": "内存", "TM0A": "内存 A", "TM0B": "内存 B", "TMVR": "内存 VRM",
+        "TN0D": "北桥", "TN1D": "北桥2", "TS0P": "南桥",
+        // 电池/电源
+        "TB0T": "电池 1", "TB1T": "电池 2", "TB2T": "电池 3", "TB3T": "电池 4",
+        "TP0P": "电源", "TP1P": "电源2", "TPCD": "电源二极管",
+        // 环境/外壳
+        "TAOL": "环境", "TaLP": "环境", "TA0P": "环境", "TA1P": "环境2", "TaSP": "环境(睡眠)",
+        "Ts0S": "掌托左", "Ts1S": "掌托右", "Ts0P": "掌托", "Ts1P": "掌托2",
+        "TCXC": "扩充槽",
+        // 存储/其他
+        "TH0P": "HDD", "TH0a": "出风口 a", "TH0b": "出风口 b", "TH1a": "出风口 c", "TH1b": "出风口 d",
+        "TH0x": "出风口 e",
+        "TW0P": "无线网卡", "TL0P": "雷电", "TI0P": "Thunderbolt", "TI1P": "Thunderbolt2",
+        "TD0P": "SSD 控制", "TDRD": "SSD 二极管", "TD3P": "NAND",
+        "TO0P": "光学驱动", "TVEP": "视频", "TVM0": "显存",
     ]
 
     static let prefixes: [(String, String)] = [

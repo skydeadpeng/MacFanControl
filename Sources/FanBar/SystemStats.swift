@@ -36,6 +36,7 @@ final class SystemStats {
         let battery: BatteryInfo
         let topProcs: [ProcUsage]
         let topMemProcs: [ProcUsage]
+        let gpuUsage: Int?          // GPU 占用 %(Apple Silicon;Intel 无 IOGPUDevice 时为 nil)
         let netInTotal: UInt64      // 网卡累计字节(流量日统计用)
         let netOutTotal: UInt64
     }
@@ -108,6 +109,7 @@ final class SystemStats {
 
         let battery = sampleBattery()
         let (topCPU, topMem) = sampleTopProcesses(n: 5, hasPrev: hadPrev, totalCPU: cpuUsage)
+        let gpu = sampleGPU()
 
         return Snapshot(cpuUsage: cpuUsage, coreUsages: coreUsages,
                         memTotal: memTotalCache, memUsed: memUsed,
@@ -115,7 +117,7 @@ final class SystemStats {
                         diskTotal: diskTotal, diskUsed: diskUsed,
                         diskRead: diskRead, diskWrite: diskWrite,
                         battery: battery, topProcs: topCPU, topMemProcs: topMem,
-                        netInTotal: lastNetIn, netOutTotal: lastNetOut)
+                        gpuUsage: gpu, netInTotal: lastNetIn, netOutTotal: lastNetOut)
     }
 
     // MARK: - CPU(host_processor_info,每核 user+system+nice 为忙时)
@@ -200,6 +202,33 @@ final class SystemStats {
         guard if_indextoname(index, &name) != nil else { return false }
         let s = String(cString: name)
         return s.hasPrefix("en") || s.hasPrefix("ppp")
+    }
+
+    // MARK: - GPU 占用(Apple Silicon:IOAccelerator 的 PerformanceStatistics)
+
+    private func sampleGPU() -> Int? {
+        var iter: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                                           IOServiceMatching("IOAccelerator"), &iter) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iter) }
+        var total = 0
+        var count = 0
+        var svc = IOIteratorNext(iter)
+        while svc != IO_OBJECT_NULL {
+            defer {
+                IOObjectRelease(svc)
+                svc = IOIteratorNext(iter)
+            }
+            guard let raw = IORegistryEntryCreateCFProperty(svc, "PerformanceStatistics" as CFString,
+                                                            kCFAllocatorDefault, 0),
+                  let stats = raw.takeRetainedValue() as? [String: Any],
+                  let util = stats["Device Utilization %"] as? Int else { continue }
+            total += util
+            count += 1
+        }
+        return count > 0 ? total / count : nil
     }
 
     // MARK: - 电池(IOPowerSources + AppleSmartBattery 注册表)

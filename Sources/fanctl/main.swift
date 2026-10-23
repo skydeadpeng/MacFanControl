@@ -360,6 +360,7 @@ final class Daemon {
     private var lastWritten: [Int: Double] = [:]
     private var lastWriteTime: [Int: Date] = [:]
     private var fanVerified: [Int: Bool] = [:]
+    private var peakTemp: [Int: Double] = [:]        // 回滞用:触发当前转速的温度峰值
     private var controlTemp: Double = 0
     private var server: JSONLineServer?
 
@@ -476,6 +477,7 @@ final class Daemon {
     /// 计算并写入各风扇目标转速。
     /// 验证是被动式的:下一轮读回 F%dTg 与上轮写入一致即视为生效;
     /// 若被系统改写(thermalmonitord 抢写)则本轮重写。
+    /// 降温方向带 1.5°C 回滞:温度未真正回落前维持转速,避免阈值附近抖动。
     private func applyControl(writer: FanWriter, config cfg: Config, fans: [FanInfo]) -> Bool {
         let force = !controlled   // 上一轮未生效则本轮强制重写
         for f in fans {
@@ -484,14 +486,27 @@ final class Daemon {
                 if !stuck { lastWritten[f.index] = nil }
             }
             let floor = max(500, min(f.max, cfg.minRPM["\(f.index)"] ?? defaultMin[f.index] ?? f.min))
-            let target: Double
+            var target: Double
             if cfg.mode == "manual" {
                 target = min(max(cfg.manualRPM["\(f.index)"] ?? floor, 500), f.max)
+            } else if let curve = cfg.curves["\(f.index)"], curve.count >= 2 {
+                target = min(max(FanCurve.target(points: curve, temp: controlTemp), 500), f.max)
             } else {
                 target = FanCurve.target(temp: controlTemp,
                                          tempStart: cfg.tempStart,
                                          tempFull: cfg.tempFull,
                                          lo: floor, hi: f.max)
+            }
+            // 回滞:目标要下降时,要求温度比峰值至少回落 1.5°C
+            if let last = lastWritten[f.index], target < last - 25 {
+                let peak = peakTemp[f.index] ?? controlTemp
+                if controlTemp > peak - 1.5 {
+                    target = last
+                } else {
+                    peakTemp[f.index] = controlTemp
+                }
+            } else {
+                peakTemp[f.index] = controlTemp
             }
 
             let shouldWrite = force

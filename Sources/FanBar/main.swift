@@ -8,6 +8,13 @@ import SMCKit
 // MARK: - 数据模型
 
 /// 历史曲线点(温度°C、CPU%、风扇RPM,保留约 3 分钟)
+
+/// 轻量双语:按系统首选语言返回中/英文案
+enum L {
+    static let isChinese = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
+}
+
 struct HistPoint: Identifiable {
     let id = UUID()
     let t: Date
@@ -145,6 +152,7 @@ final class FanModel: ObservableObject {
         let s = stats.sample()
         sys = s
         accumulateTraffic(s)
+        checkBattery(s.battery)
         guard !refreshing else { return }
         refreshing = true
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
@@ -275,6 +283,70 @@ final class FanModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.message = nil }
     }
 
+    // MARK: 电池充电提醒(充满/低电量通知,不写任何硬件)
+
+    private var lastChargingState: Bool?
+    private var lastLowNotify = Date.distantPast
+
+    private func checkBattery(_ b: SystemStats.BatteryInfo) {
+        guard b.present else { return }
+        if b.charging && b.percent >= 80 && lastChargingState == true && b.percent < 85 {
+            notify("⚡ 已充到 \(Int(b.percent))%", "长时间插电建议拔掉电源,保护电池健康")
+            lastChargingState = nil
+        }
+        if !b.onAC && b.percent <= 20 && Date().timeIntervalSince(lastLowNotify) > 1800 {
+            lastLowNotify = Date()
+            notify("🔋 电量 \(Int(b.percent))%", "电量不足,请尽快连接电源")
+        }
+        if b.charging { lastChargingState = true }
+        if !b.charging && b.percent < 100 { lastChargingState = false }
+    }
+
+    private func notify(_ title: String, _ body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current()
+            .add(UNNotificationRequest(identifier: "battery-\(Int(Date().timeIntervalSince1970))",
+                                       content: content, trigger: nil))
+    }
+
+    // MARK: 诊断导出(一键收集日志与配置,便于反馈问题)
+
+    func exportDiagnostics() {
+        var text = "MacFanControl 诊断包 \(Date())\n系统: \(ProcessInfo.processInfo.operatingSystemVersionString)\n"
+        text += "\n===== 守护进程状态 =====\n"
+        if let resp = FanClient.status(),
+           let data = try? JSONSerialization.data(withJSONObject: resp, options: [.prettyPrinted, .sortedKeys]),
+           let s = String(data: data, encoding: .utf8) {
+            text += s
+        } else {
+            text += "(守护进程未运行)"
+        }
+        text += "\n\n===== 守护进程日志(末 150 行)=====\n"
+        if let log = try? String(contentsOfFile: Paths.logFile, encoding: .utf8) {
+            text += log.split(separator: "\n").suffix(150).joined(separator: "\n")
+        } else {
+            text += "(无)"
+        }
+        text += "\n\n===== 守护进程配置 =====\n"
+        text += (try? String(contentsOfFile: Paths.configFile, encoding: .utf8)) ?? "(无)"
+        text += "\n\n===== GUI 生命周期日志 =====\n"
+        let lifeLog = NSHomeDirectory() + "/Library/Logs/macfancontrol-fanbar.log"
+        text += (try? String(contentsOfFile: lifeLog, encoding: .utf8)) ?? "(无)"
+
+        let name = "MacFanControl-诊断-\(Int(Date().timeIntervalSince1970)).txt"
+        let path = NSHomeDirectory() + "/Desktop/" + name
+        do {
+            try text.write(toFile: path, atomically: true, encoding: .utf8)
+            message = "诊断包已导出到桌面: \(name)"
+        } catch {
+            message = "导出失败: \(error.localizedDescription)"
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.message = nil }
+    }
+
     // MARK: 进程管理(右击 Top 进程可结束)
 
     func terminateProcess(_ p: SystemStats.ProcUsage, force: Bool) {
@@ -394,7 +466,38 @@ final class FanModel: ObservableObject {
         config.mode = "auto"
         config.tempStart = start
         config.tempFull = full
-        send(patch: ["mode": "auto", "tempStart": start, "tempFull": full])
+        config.curves = [:]   // 预设回到两点直线
+        send(patch: ["mode": "auto", "tempStart": start, "tempFull": full, "curves": [String: [[Double]]]()])
+    }
+
+    // MARK: 多点曲线
+
+    /// 取某风扇当前曲线(空则由两点默认推导);fanIndex=nil 表示全部风扇(取最热风扇范围)
+    func curvePoints(fanIndex: Int?) -> [CurvePoint] {
+        if let i = fanIndex {
+            if let pts = config.curves[String(i)], pts.count >= 2 {
+                return pts.sorted { $0.temp < $1.temp }
+            }
+            if let f = fans.first(where: { $0.index == i }) {
+                return [CurvePoint(temp: config.tempStart, rpm: f.min),
+                        CurvePoint(temp: config.tempFull, rpm: f.max)]
+            }
+        }
+        if let pts = config.curves[""], pts.count >= 2 { return pts.sorted { $0.temp < $1.temp } }
+        let lo = fans.map(\.min).max() ?? 1500
+        let hi = fans.map(\.max).max() ?? 5500
+        return [CurvePoint(temp: config.tempStart, rpm: lo),
+                CurvePoint(temp: config.tempFull, rpm: hi)]
+    }
+
+    /// 写曲线(fanIndex=nil 写到全部风扇)
+    func setCurvePoints(_ pts: [CurvePoint], fanIndex: Int?) {
+        var curves = config.curves
+        let keys = fanIndex.map { [String($0)] } ?? fans.map { String($0.index) }
+        for k in keys { curves[k] = pts.count >= 2 ? pts.sorted { $0.temp < $1.temp } : [] }
+        config.curves = curves
+        let payload: [String: [[Double]]] = curves.mapValues { $0.map { [$0.temp, $0.rpm] } }
+        send(patch: ["curves": payload])
     }
 
     func setCurve(start: Double, full: Double) {
@@ -735,25 +838,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: statusLine, action: nil, keyEquivalent: "")
         menu.addItem(.separator())
 
-        let boost = menu.addItem(withTitle: "风扇全速(应急)", action: #selector(quickBoost), keyEquivalent: "")
+        let boost = menu.addItem(withTitle: L.t("风扇全速(应急)", "Fans full speed (emergency)"), action: #selector(quickBoost), keyEquivalent: "")
         boost.target = self
-        let restore = menu.addItem(withTitle: "恢复自动曲线", action: #selector(quickRestore), keyEquivalent: "")
+        let restore = menu.addItem(withTitle: L.t("恢复自动曲线", "Restore auto curve"), action: #selector(quickRestore), keyEquivalent: "")
         restore.target = self
         menu.addItem(.separator())
-        for (name, start, full) in [("曲线:安静", 80.0, 100.0), ("曲线:均衡", 70.0, 95.0), ("曲线:强力", 55.0, 85.0)] {
+        for (name, start, full) in [(L.t("曲线:安静", "Curve: Quiet"), 80.0, 100.0), (L.t("曲线:均衡", "Curve: Balanced"), 70.0, 95.0), (L.t("曲线:强力", "Curve: Turbo"), 55.0, 85.0)] {
             let item = menu.addItem(withTitle: name, action: #selector(quickPreset(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ["start": start, "full": full]
         }
         menu.addItem(.separator())
-        let copy = menu.addItem(withTitle: "复制状态", action: #selector(quickCopy), keyEquivalent: "C")
+        let copy = menu.addItem(withTitle: L.t("复制状态", "Copy status"), action: #selector(quickCopy), keyEquivalent: "C")
         copy.target = self
-        let settings = menu.addItem(withTitle: "打开设置…", action: #selector(openSettingsWindow), keyEquivalent: ",")
+        let settings = menu.addItem(withTitle: L.t("打开设置…", "Settings…"), action: #selector(openSettingsWindow), keyEquivalent: ",")
         settings.target = self
         let sensors = menu.addItem(withTitle: "全部传感器…", action: #selector(openSensorWindow), keyEquivalent: "")
         sensors.target = self
         menu.addItem(.separator())
-        let quit = menu.addItem(withTitle: "退出 FanBar", action: #selector(quitApp), keyEquivalent: "Q")
+        let quit = menu.addItem(withTitle: L.t("退出 FanBar", "Quit FanBar"), action: #selector(quitApp), keyEquivalent: "Q")
         quit.target = self
 
         statusItem?.menu = menu
@@ -896,9 +999,9 @@ struct PanelView: View {
             if let v = model.updateAvailable {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
-                    Text("发现新版本 \(v)").font(.caption)
+                    Text(L.t("发现新版本 \(v)", "New version \(v) available")).font(.caption)
                     Spacer()
-                    Button("查看") {
+                    Button(L.t("查看", "View")) {
                         if let url = URL(string: "https://github.com/skydeadpeng/MacFanControl/releases/latest") {
                             NSWorkspace.shared.open(url)
                         }
@@ -923,12 +1026,12 @@ struct PanelView: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
                 if model.starting {
-                    Text("守护进程启动中…").font(.caption).foregroundStyle(.secondary)
+                    Text(L.t("守护进程启动中…", "Daemon starting…")).font(.caption).foregroundStyle(.secondary)
                 } else if model.daemonOnline {
                     Text(model.controlled ? "● 已接管" : "○ 系统控制")
                         .font(.caption).foregroundStyle(model.controlled ? Color.green : Color.orange)
                 } else {
-                    Text("守护进程未运行").font(.caption).foregroundStyle(.secondary)
+                    Text(L.t("守护进程未运行", "Daemon not running")).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -941,7 +1044,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 6) {
             if let sys = model.sys {
                 HStack {
-                    Text("系统").font(.caption).foregroundStyle(.secondary)
+                    Text(L.t("系统", "System")).font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Text("↓ \(SystemStats.Snapshot.speed(sys.netIn))   ↑ \(SystemStats.Snapshot.speed(sys.netOut))")
                         .font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -970,16 +1073,16 @@ struct PanelView: View {
                             }
                             .contentShape(Rectangle())
                             .contextMenu {
-                                Button("结束进程(\(p.name))") {
+                                Button(L.t("结束进程(\(p.name))", "Quit \(p.name)")) {
                                     model.terminateProcess(p, force: false)
                                 }
-                                Button("强制退出(不可恢复)", role: .destructive) {
+                                Button(L.t("强制退出(不可恢复)", "Force quit"), role: .destructive) {
                                     model.terminateProcess(p, force: true)
                                 }
                             }
                         }
                         HStack {
-                            Text("右击进程名可将其结束").foregroundStyle(.tertiary)
+                            Text(L.t("右击进程名可将其结束", "Right-click a process to quit it")).foregroundStyle(.tertiary)
                             Spacer()
                             Button(procByMem ? "按CPU" : "按内存") { procByMem.toggle() }
                         }
@@ -989,8 +1092,17 @@ struct PanelView: View {
                     .foregroundStyle(.secondary)
                     .padding(.leading, 86)
                 }
+                if let gpu = sys.gpuUsage {
+                    HStack(spacing: 8) {
+                        Text("GPU").font(.caption).frame(width: 34, alignment: .leading)
+                        Text("\(gpu)%").font(.caption).monospacedDigit().frame(width: 36, alignment: .trailing)
+                        Text(gpu > 85 ? "高负载" : (gpu > 50 ? "中等" : "空闲"))
+                            .font(.caption2).foregroundStyle(.tertiary)
+                        Spacer()
+                    }
+                }
                 HStack(spacing: 8) {
-                    Text("内存").font(.caption).frame(width: 34, alignment: .leading)
+                    Text(L.t("内存", "Memory")).font(.caption).frame(width: 34, alignment: .leading)
                     Text(String(format: "%.0f%%", sys.memPercent * 100))
                         .font(.caption).monospacedDigit().frame(width: 36, alignment: .trailing)
                     Text("\(SystemStats.Snapshot.size(sys.memUsed)) / \(SystemStats.Snapshot.size(sys.memTotal))")
@@ -999,7 +1111,7 @@ struct PanelView: View {
                 }
                 if sys.battery.present {
                     HStack(spacing: 8) {
-                        Text("电池").font(.caption).frame(width: 34, alignment: .leading)
+                        Text(L.t("电池", "Battery")).font(.caption).frame(width: 34, alignment: .leading)
                         Text(String(format: "%.0f%%", sys.battery.percent))
                             .font(.caption).monospacedDigit().frame(width: 36, alignment: .trailing)
                             .foregroundStyle(sys.battery.percent < 20 && !sys.battery.onAC ? Color.red : Color.primary)
@@ -1010,7 +1122,7 @@ struct PanelView: View {
                     }
                 }
                 HStack(spacing: 8) {
-                    Text("硬盘").font(.caption).frame(width: 34, alignment: .leading)
+                    Text(L.t("硬盘", "Disk")).font(.caption).frame(width: 34, alignment: .leading)
                     Text(String(format: "%.0f%%", sys.diskPercent * 100))
                         .font(.caption).monospacedDigit().frame(width: 36, alignment: .trailing)
                         .foregroundStyle(sys.diskPercent > 0.9 ? Color.red : Color.primary)
@@ -1022,14 +1134,14 @@ struct PanelView: View {
                         .lineLimit(1).minimumScaleFactor(0.8)
                 }
                 HStack(spacing: 8) {
-                    Text("流量").font(.caption).frame(width: 34, alignment: .leading)
+                    Text(L.t("流量", "Traffic")).font(.caption).frame(width: 34, alignment: .leading)
                     Text("今日 ↓\(SystemStats.Snapshot.trafficSize(model.todayIn))  ↑\(SystemStats.Snapshot.trafficSize(model.todayOut))")
                         .font(.caption).monospacedDigit().foregroundStyle(.secondary)
                     Spacer()
                 }
                 HStack(spacing: 8) {
                     Toggle(isOn: $model.alarmEnabled) {
-                        Text("高温报警").font(.caption)
+                        Text(L.t("高温报警", "High-temp alert")).font(.caption)
                     }
                     .toggleStyle(.switch)
                     .controlSize(.mini)
@@ -1040,7 +1152,7 @@ struct PanelView: View {
                     }
                 }
             } else {
-                Text("正在读取系统信息…").font(.caption).foregroundStyle(.secondary)
+                Text(L.t("正在读取系统信息…", "Reading system info…")).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -1109,15 +1221,15 @@ struct PanelView: View {
     private var controlPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: Binding(get: { model.config.enabled }, set: model.setEnabled)) {
-                Text("启用风扇控制").font(.headline)
+                Text(L.t("启用风扇控制", "Enable fan control")).font(.headline)
             }
 
             if model.config.enabled {
                 Picker("模式", selection: Binding(
                     get: { model.config.mode == "manual" },
                     set: model.setMode)) {
-                    Text("自动曲线").tag(false)
-                    Text("手动转速").tag(true)
+                    Text(L.t("自动曲线", "Auto curve")).tag(false)
+                    Text(L.t("手动转速", "Manual RPM")).tag(true)
                 }
                 .pickerStyle(.segmented)
 
@@ -1127,19 +1239,12 @@ struct PanelView: View {
                     }
                 } else {
                     HStack(spacing: 6) {
-                        presetButton("安静", 80, 100)
-                        presetButton("均衡", 70, 95)
-                        presetButton("强力", 55, 85)
+                        presetButton(L.t("安静", "Quiet"), 80, 100)
+                        presetButton(L.t("均衡", "Balanced"), 70, 95)
+                        presetButton(L.t("强力", "Turbo"), 55, 85)
                         Spacer()
                     }
-                    curveSlider(title: "起转温度", value: model.config.tempStart, range: 40...75,
-                                format: "%.0f °C 开始升速") { v in
-                        model.setCurve(start: v, full: max(v + 5, model.config.tempFull))
-                    }
-                    curveSlider(title: "全速温度", value: model.config.tempFull, range: 75...100,
-                                format: "%.0f °C 满转速") { v in
-                        model.setCurve(start: min(model.config.tempStart, v - 5), full: v)
-                    }
+                    curveEditor
                 }
 
                 Divider()
@@ -1170,20 +1275,21 @@ struct PanelView: View {
                     }
                     .padding(.top, 4)
                 } label: {
-                    Text("控制传感器").font(.subheadline)
+                    Text(L.t("控制传感器", "Control sensors")).font(.subheadline)
                 }
                 Toggle(isOn: $model.autoStart) {
-                    Text("开机自启(崩溃自动恢复)").font(.caption)
+                    Text(L.t("开机自启(崩溃自动恢复)", "Launch at login (auto-restart)")).font(.caption)
                 }
                 .toggleStyle(.switch)
                 .controlSize(.mini)
             }
 
             HStack {
-                Button("恢复系统控制") { model.restore() }
+                Button(L.t("恢复系统控制", "Restore system control")) { model.restore() }
                 Button("全部传感器…") { openSensorWindow() }
+                Button(L.t("诊断包", "Diagnostics")) { model.exportDiagnostics() }
                 Spacer()
-                Button("卸载守护进程…") { model.uninstallDaemon() }
+                Button(L.t("卸载守护进程…", "Uninstall daemon…")) { model.uninstallDaemon() }
                     .foregroundStyle(.secondary)
                 Button("退出") { NSApp.terminate(nil) }
             }
@@ -1220,17 +1326,96 @@ struct PanelView: View {
         }
     }
 
-    private func curveSlider(title: String, value: Double, range: ClosedRange<Double>,
-                             format: String, commit: @escaping (Double) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title).font(.subheadline)
-                Spacer()
-                Text(String(format: format, value)).monospacedDigit().font(.subheadline)
+    // MARK: 多点曲线编辑器
+
+    @State private var curveFan = -1   // -1 = 全部风扇
+
+    private var curveEditor: some View {
+        let fanKey = curveFan >= 0 ? curveFan : nil
+        let pts = model.curvePoints(fanIndex: fanKey).sorted { $0.temp < $1.temp }
+        return VStack(alignment: .leading, spacing: 6) {
+            Picker("", selection: $curveFan) {
+                Text(L.t("全部风扇", "All fans")).tag(-1)
+                ForEach(model.fans) { f in
+                    Text("风扇 \(f.index + 1)").tag(f.index)
+                }
             }
-            Slider(value: Binding(get: { value }, set: { commit($0.rounded()) }),
-                   in: range, step: 1)
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+
+            Chart(Array(pts.enumerated()), id: \.offset) { _, p in
+                LineMark(x: .value("温度", p.temp), y: .value("转速", p.rpm))
+                    .foregroundStyle(Color.blue.gradient)
+                PointMark(x: .value("温度", p.temp), y: .value("转速", p.rpm))
+                    .foregroundStyle(Color.blue)
+            }
+            .chartXScale(domain: 35...105)
+            .chartYScale(domain: 1000...6000)
+            .frame(height: 88)
+
+            ForEach(Array(pts.enumerated()), id: \.offset) { idx, _ in
+                pointRow(idx: idx, pts: pts, fanKey: fanKey)
+            }
+            HStack {
+                Button("添加控制点") { addPoint(pts, fanKey: fanKey) }
+                Button("恢复直线") { model.setCurvePoints([], fanIndex: fanKey) }
+                Spacer()
+                Text("降温有 1.5°C 回滞防抖").foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.link)
+            .font(.caption)
         }
+    }
+
+    private func pointRow(idx: Int, pts: [CurvePoint], fanKey: Int?) -> some View {
+        HStack(spacing: 6) {
+            Text(String(format: "%.0f°C", pts[idx].temp))
+                .monospacedDigit().frame(width: 42)
+            Slider(value: pointBinding(idx: idx, pts: pts, fanKey: fanKey, isTemp: true),
+                   in: 40...105, step: 1)
+            Text(String(format: "%.0f转", pts[idx].rpm))
+                .monospacedDigit().frame(width: 44)
+            Slider(value: pointBinding(idx: idx, pts: pts, fanKey: fanKey, isTemp: false),
+                   in: 1200...6000, step: 50)
+            Button {
+                removePoint(idx: idx, fanKey: fanKey)
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.link)
+        }
+    }
+
+    private func pointBinding(idx: Int, pts: [CurvePoint], fanKey: Int?, isTemp: Bool) -> Binding<Double> {
+        Binding(
+            get: { isTemp ? pts[idx].temp : pts[idx].rpm },
+            set: { v in
+                var arr = pts
+                if isTemp { arr[idx].temp = v.rounded() } else { arr[idx].rpm = (v / 50).rounded() * 50 }
+                arr.sort { $0.temp < $1.temp }
+                model.setCurvePoints(arr, fanIndex: fanKey)
+            })
+    }
+
+    private func addPoint(_ pts: [CurvePoint], fanKey: Int?) {
+        var arr = pts.sorted { $0.temp < $1.temp }
+        guard arr.count >= 2 else { return }
+        var bestI = 0
+        var bestGap = -1.0
+        for i in 1..<arr.count where arr[i].temp - arr[i - 1].temp > bestGap {
+            bestGap = arr[i].temp - arr[i - 1].temp
+            bestI = i
+        }
+        arr.insert(CurvePoint(temp: ((arr[bestI - 1].temp + arr[bestI].temp) / 2).rounded(),
+                              rpm: (arr[bestI - 1].rpm + arr[bestI].rpm) / 2), at: bestI)
+        model.setCurvePoints(arr, fanIndex: fanKey)
+    }
+
+    private func removePoint(idx: Int, fanKey: Int?) {
+        var arr = model.curvePoints(fanIndex: fanKey).sorted { $0.temp < $1.temp }
+        guard arr.count > 2, idx < arr.count else { return }
+        arr.remove(at: idx)
+        model.setCurvePoints(arr, fanIndex: fanKey)
     }
 
     private func sensorBinding(_ key: String) -> Binding<Bool> {

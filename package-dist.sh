@@ -2,7 +2,7 @@
 # 打包分发版:通用二进制(Apple Silicon + Intel)+ DMG 安装包
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="1.1"
+VERSION="2.0"
 
 echo "==> 编译通用二进制(arm64 + x86_64)…"
 swift build -c release --arch arm64 --arch x86_64 --product FanBar
