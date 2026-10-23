@@ -15,11 +15,13 @@ enum L {
     static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
 }
 
+/// 历史曲线点(温度°C、CPU%、GPU%、风扇RPM,保留约 15 分钟,跨重启持久化)
 struct HistPoint: Identifiable {
     let id = UUID()
     let t: Date
     let temp: Double
     let cpu: Double
+    let gpu: Double
     let rpm: Double
 }
 
@@ -63,6 +65,8 @@ final class FanModel: ObservableObject {
     }
     /// 打开"全部传感器"窗口(由 AppDelegate 注入实现)
     var openSensors: (() -> Void)?
+    /// 打开"7 天趋势"窗口
+    var openTrend: (() -> Void)?
 
     // 高温报警(UserDefaults 持久化)
     @Published var alarmEnabled: Bool = UserDefaults.standard.object(forKey: "alarmEnabled") as? Bool ?? true {
@@ -99,6 +103,8 @@ final class FanModel: ObservableObject {
     init() {
         loadTraffic()
         loadTodayStats()
+        loadHistory()
+        loadTrend()
         timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.refresh()
         }
@@ -236,9 +242,73 @@ final class FanModel: ObservableObject {
     }
 
     private func appendHistory(temp: Double, cpu: Double, rpm: Double) {
-        history.append(HistPoint(t: Date(), temp: temp, cpu: cpu * 100, rpm: rpm))
+        let gpu = Double(sys?.gpuUsage ?? 0)
+        history.append(HistPoint(t: Date(), temp: temp, cpu: cpu * 100, gpu: gpu, rpm: rpm))
         if history.count > 600 { history.removeFirst(history.count - 600) }   // 1.5s × 600 ≈ 15 分钟
         updateTodayStats(temp)
+        updateHourlyTrend(temp: temp, fanRPM: rpm)
+        histSaveCounter += 1
+        if histSaveCounter % 20 == 0 { persistHistoryAndTrend() }
+    }
+
+    // MARK: 历史与 7 天逐小时趋势持久化(跨重启连续)
+
+    private var histSaveCounter = 0
+    private static var historyFile: String { userSupportDir + "/history.json" }
+    private static var trendFile: String { userSupportDir + "/trends.json" }
+
+    private func loadHistory() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.historyFile)),
+              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[Double]] else { return }
+        let cutoff = Date().addingTimeInterval(-930)
+        history = arr.compactMap { row in
+            guard row.count >= 4 else { return nil }
+            let t = Date(timeIntervalSince1970: row[0])
+            guard t > cutoff else { return nil }
+            return HistPoint(t: t, temp: row[1], cpu: row[2],
+                             gpu: row.count > 4 ? row[4] : 0, rpm: row[3])
+        }
+    }
+
+    private func persistHistoryAndTrend() {
+        let rows = history.map { [$0.t.timeIntervalSince1970, $0.temp, $0.cpu, $0.rpm, $0.gpu] }
+        if let d = try? JSONSerialization.data(withJSONObject: rows) {
+            try? d.write(to: URL(fileURLWithPath: Self.historyFile))
+        }
+        if let d = try? JSONSerialization.data(withJSONObject: hourlyTrend) {
+            try? d.write(to: URL(fileURLWithPath: Self.trendFile))
+        }
+    }
+
+    @Published var hourlyTrend: [[String: Any]] = []   // [{h, min, max, sum, cnt, fan}]
+    private var lastTrendHour = -1
+
+    private func loadTrend() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.trendFile)),
+              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return }
+        let cutoff = Date().addingTimeInterval(-7 * 86400).timeIntervalSince1970
+        hourlyTrend = arr.filter { ($0["h"] as? Double ?? 0) > cutoff }
+        lastTrendHour = Int(hourlyTrend.last?["h"] as? Double ?? 0) / 3600
+    }
+
+    private func updateHourlyTrend(temp: Double, fanRPM: Double) {
+        let hourTS = Int(Date().timeIntervalSince1970 / 3600) * 3600
+        if lastTrendHour != hourTS / 3600 {
+            lastTrendHour = hourTS / 3600
+        }
+        if var bucket = hourlyTrend.last, (bucket["h"] as? Double) == Double(hourTS) {
+            hourlyTrend.removeLast()
+            bucket["min"] = min(bucket["min"] as? Double ?? temp, temp)
+            bucket["max"] = max(bucket["max"] as? Double ?? temp, temp)
+            bucket["sum"] = (bucket["sum"] as? Double ?? 0) + temp
+            bucket["cnt"] = (bucket["cnt"] as? Double ?? 0) + 1
+            bucket["fan"] = max(bucket["fan"] as? Double ?? 0, fanRPM)
+            hourlyTrend.append(bucket)
+        } else {
+            hourlyTrend.append(["h": Double(hourTS), "min": temp, "max": temp,
+                                "sum": temp, "cnt": 1.0, "fan": fanRPM])
+        }
+        if hourlyTrend.count > 7 * 24 { hourlyTrend.removeFirst(hourlyTrend.count - 7 * 24) }
     }
 
     // MARK: 快捷操作(右键菜单用)
@@ -415,7 +485,7 @@ final class FanModel: ObservableObject {
         guard Date().timeIntervalSince(lastAlarmAt) > 600 else { return }
         lastAlarmAt = Date()
         let content = UNMutableNotificationContent()
-        content.title = "温度过高"
+        content.title = L.t("温度过高", "High temperature")
         content.body = String(format: "控制温度已达 %.0f°C(报警阈值 %.0f°C),风扇正按曲线散热", controlTemp, alarmTemp)
         content.sound = .default
         let request = UNNotificationRequest(identifier: "temp-\(Int(Date().timeIntervalSince1970))",
@@ -710,6 +780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var sensorWindow: NSWindow?
+    private var trendWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -733,6 +804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
 
         model.openSensors = { [weak self] in self?.openSensorWindow() }
+        model.openTrend = { [weak self] in self?.openTrendWindow() }
 
         Publishers.CombineLatest3(model.$sys, model.$controlTemp, model.$daemonOnline)
             .receive(on: DispatchQueue.main)
@@ -796,8 +868,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateTitle() {
         guard let button = statusItem?.button else { return }
-        let text = model.statusText
-        button.title = text
+        // 等宽数字:数值变化时标题宽度不抖动
+        button.attributedTitle = NSAttributedString(
+            string: model.statusText,
+            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)])
         // 高温时换用高温计图标作提示
         let hot = model.controlTemp >= (model.alarmEnabled ? model.alarmTemp : 95)
         let symbol = hot ? "thermometer.high" : "thermometer.medium"
@@ -892,6 +966,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sensorWindow?.makeKeyAndOrderFront(nil)
     }
 
+    private func openTrendWindow() {
+        if trendWindow == nil {
+            let host = NSHostingController(rootView: TrendWindowView().environmentObject(model))
+            let window = NSWindow(contentViewController: host)
+            window.title = "温度趋势(近 7 天)"
+            window.styleMask.insert(.resizable)
+            window.contentMinSize = NSSize(width: 720, height: 380)
+            window.isReleasedWhenClosed = false
+            trendWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        trendWindow?.makeKeyAndOrderFront(nil)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         appendLifeLog("退出(用户或系统终止)")
     }
@@ -921,19 +1009,30 @@ extension AppDelegate: NSMenuDelegate {
 /// 全部传感器列表窗口:查看所有传感器,勾选参与风扇控制的(取最大值)
 struct SensorWindowView: View {
     @EnvironmentObject var model: FanModel
+    @State private var searchText = ""
+
+    private var filtered: [SensorRow] {
+        guard !searchText.isEmpty else { return model.sensors }
+        let q = searchText.lowercased()
+        return model.sensors.filter {
+            $0.key.lowercased().contains(q) || $0.label.lowercased().contains(q)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("全部传感器(\(model.sensors.count) 个,按温度排序)")
+                Text(L.t("全部传感器(\(filtered.count) 个,按温度排序)",
+                         "All sensors (\(filtered.count))"))
                     .font(.headline)
                 Spacer()
-                Text(model.daemonOnline ? "勾选参与风扇控制(取最大值)" : "守护进程未运行,仅查看")
-                    .font(.caption).foregroundStyle(.secondary)
+                TextField(L.t("搜索键名/名称", "Search"), text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 150)
             }
             .padding(10)
             Divider()
-            List(model.sensors) { s in
+            List(filtered) { s in
                 HStack {
                     Toggle("", isOn: sensorBinding(s.key))
                         .labelsHidden()
@@ -1178,6 +1277,8 @@ struct PanelView: View {
                                 .foregroundStyle(Color.red.opacity(0.85))
                             LineMark(x: .value("时间", p.t), y: .value("CPU", p.cpu))
                                 .foregroundStyle(Color.blue.opacity(0.65))
+                            LineMark(x: .value("时间", p.t), y: .value("GPU", p.gpu))
+                                .foregroundStyle(Color.purple.opacity(0.6))
                         }
                     }
                     .chartYScale(domain: 0...110)
@@ -1195,6 +1296,7 @@ struct PanelView: View {
                     HStack(spacing: 10) {
                         Text("— 温度°C").foregroundStyle(.red)
                         Text("— CPU%").foregroundStyle(.blue)
+                        Text("— GPU%").foregroundStyle(.purple)
                         Text("— 风扇RPM").foregroundStyle(.green)
                         Spacer()
                         if model.todayHigh > 0 {
@@ -1286,7 +1388,8 @@ struct PanelView: View {
 
             HStack {
                 Button(L.t("恢复系统控制", "Restore system control")) { model.restore() }
-                Button("全部传感器…") { openSensorWindow() }
+                Button(L.t("全部传感器…", "All sensors…")) { openSensorWindow() }
+                Button(L.t("趋势…", "Trends…")) { model.openTrend?() }
                 Button(L.t("诊断包", "Diagnostics")) { model.exportDiagnostics() }
                 Spacer()
                 Button(L.t("卸载守护进程…", "Uninstall daemon…")) { model.uninstallDaemon() }
@@ -1333,28 +1436,37 @@ struct PanelView: View {
     private var curveEditor: some View {
         let fanKey = curveFan >= 0 ? curveFan : nil
         let pts = model.curvePoints(fanIndex: fanKey).sorted { $0.temp < $1.temp }
+        // 转速范围按风扇实际(全部风扇模式取并集)
+        let rpmRange: ClosedRange<Double> = {
+            if let i = fanKey, let f = model.fans.first(where: { $0.index == i }) {
+                return max(500, f.min - 200)...f.max + 200
+            }
+            let lo = model.fans.map(\.min).min() ?? 1200
+            let hi = model.fans.map(\.max).max() ?? 6000
+            return max(500, lo - 200)...hi + 200
+        }()
         return VStack(alignment: .leading, spacing: 6) {
             Picker("", selection: $curveFan) {
                 Text(L.t("全部风扇", "All fans")).tag(-1)
                 ForEach(model.fans) { f in
-                    Text("风扇 \(f.index + 1)").tag(f.index)
+                    Text(L.t("风扇 \(f.index + 1)", "Fan \(f.index + 1)")).tag(f.index)
                 }
             }
             .pickerStyle(.segmented)
             .controlSize(.small)
 
-            Chart(Array(pts.enumerated()), id: \.offset) { _, p in
-                LineMark(x: .value("温度", p.temp), y: .value("转速", p.rpm))
-                    .foregroundStyle(Color.blue.gradient)
-                PointMark(x: .value("温度", p.temp), y: .value("转速", p.rpm))
-                    .foregroundStyle(Color.blue)
+            CurveCanvas(points: pts, tempRange: 40...105, rpmRange: rpmRange,
+                        currentTemp: model.controlTemp) { idx, newPoint in
+                var arr = pts
+                guard idx < arr.count else { return }
+                arr[idx] = newPoint
+                arr.sort { $0.temp < $1.temp }
+                model.setCurvePoints(arr, fanIndex: fanKey)
             }
-            .chartXScale(domain: 35...105)
-            .chartYScale(domain: 1000...6000)
-            .frame(height: 88)
+            .frame(height: 96)
 
             ForEach(Array(pts.enumerated()), id: \.offset) { idx, _ in
-                pointRow(idx: idx, pts: pts, fanKey: fanKey)
+                pointRow(idx: idx, pts: pts, fanKey: fanKey, rpmRange: rpmRange)
             }
             HStack {
                 Button("添加控制点") { addPoint(pts, fanKey: fanKey) }
@@ -1367,7 +1479,7 @@ struct PanelView: View {
         }
     }
 
-    private func pointRow(idx: Int, pts: [CurvePoint], fanKey: Int?) -> some View {
+    private func pointRow(idx: Int, pts: [CurvePoint], fanKey: Int?, rpmRange: ClosedRange<Double>) -> some View {
         HStack(spacing: 6) {
             Text(String(format: "%.0f°C", pts[idx].temp))
                 .monospacedDigit().frame(width: 42)
@@ -1376,7 +1488,7 @@ struct PanelView: View {
             Text(String(format: "%.0f转", pts[idx].rpm))
                 .monospacedDigit().frame(width: 44)
             Slider(value: pointBinding(idx: idx, pts: pts, fanKey: fanKey, isTemp: false),
-                   in: 1200...6000, step: 50)
+                   in: rpmRange, step: 50)
             Button {
                 removePoint(idx: idx, fanKey: fanKey)
             } label: {
@@ -1458,7 +1570,7 @@ struct PanelView: View {
             }
             ForEach(model.fans) { f in
                 HStack {
-                    Text("风扇 \(f.index + 1)").font(.caption)
+                    Text(L.t("风扇 \(f.index + 1)", "Fan \(f.index + 1)")).font(.caption)
                     Spacer()
                     Text(String(format: "%.0f RPM", f.rpm)).monospacedDigit().font(.caption)
                 }

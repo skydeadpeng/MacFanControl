@@ -2,7 +2,7 @@
 # 打包分发版:通用二进制(Apple Silicon + Intel)+ DMG 安装包
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="2.0"
+VERSION="2.1"
 
 echo "==> 编译通用二进制(arm64 + x86_64)…"
 swift build -c release --arch arm64 --arch x86_64 --product FanBar
@@ -80,6 +80,7 @@ M3/M4 机型首次接管风扇可能需要几秒钟。
 本软件按"原样"提供,使用风险自负。长时间高负载时请留意温度显示。
 EOF
 
+ln -sf /Applications "$DIST/Applications"
 echo "==> 生成 DMG…"
 hdiutil create -volname "MacFanControl" -srcfolder "$DIST" -ov -format UDZO "dist/MacFanControl-v${VERSION}.dmg" >/dev/null
 echo ""

@@ -8,5 +8,6 @@ let package = Package(
         .target(name: "SMCKit"),
         .executableTarget(name: "fanctl", dependencies: ["SMCKit"]),
         .executableTarget(name: "FanBar", dependencies: ["SMCKit"]),
+        .testTarget(name: "MacFanControlTests", dependencies: ["SMCKit"]),
     ]
 )

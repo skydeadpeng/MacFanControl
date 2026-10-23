@@ -315,7 +315,23 @@ final class SystemStats {
         let memList = entries.sorted { $0.memMB > $1.memMB }
             .prefix(n)
             .map { ProcUsage(pid: $0.pid, name: $0.name, percent: 0, memMB: $0.memMB) }
-        return (cpuList, memList)
+        // 榜上进程换完整名(p_comm 只有 16 字符会截断)
+        var result = (cpu: cpuList, mem: memList)
+        var pids = Set(result.cpu.map(\.pid))
+        pids.formUnion(result.mem.map(\.pid))
+        var names: [Int32: String] = [:]
+        for pid in pids {
+            var path = [CChar](repeating: 0, count: 1024)
+            if proc_pidpath(pid, &path, 1024) > 0 {
+                let last = (String(cString: path) as NSString).lastPathComponent
+                if last.count > 1 { names[pid] = last }
+            }
+        }
+        if !names.isEmpty {
+            for i in result.cpu.indices { result.cpu[i].name = names[result.cpu[i].pid] ?? result.cpu[i].name }
+            for i in result.mem.indices { result.mem[i].name = names[result.mem[i].pid] ?? result.mem[i].name }
+        }
+        return result
     }
 
     // MARK: - 硬盘空间(启动卷,"重要用途可用容量"口径与 Finder 一致)
