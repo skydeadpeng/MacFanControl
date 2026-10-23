@@ -40,7 +40,16 @@ jobs:
           swift build -c release --arch arm64 --arch x86_64 --product fanctl
 
       - name: Package DMG
-        run: ./package-dist.sh
+        run: |
+          set +e
+          ./package-dist.sh > /tmp/pkg.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            tail -30 /tmp/pkg.log | while IFS= read -r line; do
+              echo "::error::[pkg] ${line:0:200}"
+            done
+            exit 1
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

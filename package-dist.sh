@@ -15,6 +15,8 @@ APP="$DIST/FanBar.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 BIN=".build/out/Products/Release"
+[ -d "$BIN" ] || BIN=".build/apple/Products/Release"
+[ -d "$BIN" ] || { echo "❌ 找不到构建产物目录(.build/out 或 .build/apple)"; exit 1; }
 cp "$BIN/FanBar" "$APP/Contents/MacOS/FanBar"
 cp "$BIN/fanctl" "$APP/Contents/Resources/fanctl"
 chmod +x "$APP/Contents/MacOS/FanBar" "$APP/Contents/Resources/fanctl"
