@@ -11,19 +11,26 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run unit tests
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           swift test > /tmp/test.log 2>&1
           code=$?
           if [ $code -ne 0 ]; then
-            cp /tmp/test.log ci-error.txt
-            git config user.name "ci" && git config user.email "ci@users.noreply.github.com"
-            git add ci-error.txt
-            git commit -m "ci log" --no-verify
-            git push origin HEAD:ci-debug
+            grep -E "error:" /tmp/test.log | sort -u | head -25 | while IFS= read -r line; do
+              echo "::error::${line:0:250}"
+            done
+            tail -40 /tmp/test.log | while IFS= read -r line; do
+              echo "::error::[tail] ${line:0:200}"
+            done
+            tail -200 /tmp/test.log > "ci-error-$GITHUB_RUN_ID.txt" || true
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/ci-error-$GITHUB_RUN_ID.txt" \
+              -f message="ci error log $GITHUB_RUN_ID" \
+              -f content="$(base64 -i "ci-error-$GITHUB_RUN_ID.txt")" > /dev/null || true
             exit 1
           fi
 
