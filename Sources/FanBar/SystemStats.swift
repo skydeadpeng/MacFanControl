@@ -19,6 +19,7 @@ final class SystemStats {
         var pid: Int32
         var name: String
         var percent: Double      // 占整机百分比
+        var memMB: Double        // 常驻内存
     }
 
     struct Snapshot {
@@ -34,6 +35,7 @@ final class SystemStats {
         let diskWrite: Double
         let battery: BatteryInfo
         let topProcs: [ProcUsage]
+        let topMemProcs: [ProcUsage]
         let netInTotal: UInt64      // 网卡累计字节(流量日统计用)
         let netOutTotal: UInt64
     }
@@ -105,14 +107,14 @@ final class SystemStats {
         lastTime = now
 
         let battery = sampleBattery()
-        let topProcs = sampleTopProcesses(n: 3, hasPrev: hadPrev, totalCPU: cpuUsage)
+        let (topCPU, topMem) = sampleTopProcesses(n: 5, hasPrev: hadPrev, totalCPU: cpuUsage)
 
         return Snapshot(cpuUsage: cpuUsage, coreUsages: coreUsages,
                         memTotal: memTotalCache, memUsed: memUsed,
                         netIn: netIn, netOut: netOut,
                         diskTotal: diskTotal, diskUsed: diskUsed,
                         diskRead: diskRead, diskWrite: diskWrite,
-                        battery: battery, topProcs: topProcs,
+                        battery: battery, topProcs: topCPU, topMemProcs: topMem,
                         netInTotal: lastNetIn, netOutTotal: lastNetOut)
     }
 
@@ -236,19 +238,19 @@ final class SystemStats {
 
     // MARK: - Top CPU 进程(proc_pidinfo 任务耗时差值,按占比分摊总 CPU 占用率)
 
-    private func sampleTopProcesses(n: Int, hasPrev: Bool, totalCPU: Double) -> [ProcUsage] {
+    private func sampleTopProcesses(n: Int, hasPrev: Bool, totalCPU: Double) -> (cpu: [ProcUsage], mem: [ProcUsage]) {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var size: size_t = 0
-        guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return [] }
+        guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return ([], []) }
         let count = size / MemoryLayout<kinfo_proc>.stride
-        guard count > 0 else { return [] }
+        guard count > 0 else { return ([], []) }
         var procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
-        guard sysctl(&mib, u_int(mib.count), &procs, &size, nil, 0) == 0 else { return [] }
+        guard sysctl(&mib, u_int(mib.count), &procs, &size, nil, 0) == 0 else { return ([], []) }
         let actual = min(count, size / MemoryLayout<kinfo_proc>.stride)
 
         var current = [Int32: UInt64]()
         current.reserveCapacity(actual)
-        var entries: [(pid: Int32, name: String, delta: UInt64)] = []
+        var entries: [(pid: Int32, name: String, delta: UInt64, memMB: Double)] = []
         for i in 0..<actual {
             let pid = procs[i].kp_proc.p_pid
             guard pid > 0 else { continue }
@@ -256,21 +258,35 @@ final class SystemStats {
             guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &pti, Int32(MemoryLayout<proc_taskinfo>.size)) > 0 else { continue }
             let total = pti.pti_total_user + pti.pti_total_system
             current[pid] = total
-            guard hasPrev, let prev = lastProcTimes[pid], total > prev else { continue }
             let name = withUnsafeBytes(of: procs[i].kp_proc.p_comm) { raw -> String in
                 let bytes = raw.prefix(while: { $0 != 0 })
                 return String(bytes: bytes, encoding: .utf8) ?? ""
             }
-            entries.append((pid, name.isEmpty ? "pid \(pid)" : name, total - prev))
+            let memMB = Double(pti.pti_resident_size) / 1_048_576
+            let delta: UInt64
+            if hasPrev, let prev = lastProcTimes[pid], total > prev {
+                delta = total - prev
+            } else {
+                delta = 0
+            }
+            entries.append((pid, name.isEmpty ? "pid \(pid)" : name, delta, memMB))
         }
         lastProcTimes = current
 
         let sum = entries.reduce(UInt64(0)) { $0 + $1.delta }
-        guard sum > 0, totalCPU > 0.005 else { return [] }
-        return entries.sorted { $0.delta > $1.delta }
+        var cpuList: [ProcUsage] = []
+        if sum > 0, totalCPU > 0.005 {
+            cpuList = entries.filter { $0.delta > 0 }
+                .sorted { $0.delta > $1.delta }
+                .prefix(n)
+                .map { ProcUsage(pid: $0.pid, name: $0.name,
+                                 percent: Double($0.delta) / Double(sum) * totalCPU * 100,
+                                 memMB: $0.memMB) }
+        }
+        let memList = entries.sorted { $0.memMB > $1.memMB }
             .prefix(n)
-            .map { ProcUsage(pid: $0.pid, name: $0.name,
-                             percent: Double($0.delta) / Double(sum) * totalCPU * 100) }
+            .map { ProcUsage(pid: $0.pid, name: $0.name, percent: 0, memMB: $0.memMB) }
+        return (cpuList, memList)
     }
 
     // MARK: - 硬盘空间(启动卷,"重要用途可用容量"口径与 Finder 一致)

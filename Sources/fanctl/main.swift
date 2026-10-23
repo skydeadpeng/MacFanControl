@@ -352,6 +352,9 @@ final class Daemon {
     private let lock = NSLock()
     private var ready = false
     private var lastTickEnd = Date()   // 看门狗心跳:SMC 调用可能永久卡死,超时自杀等 launchd 拉起
+    private var tempCache: [SensorReading] = []      // 全量温度(约 8 秒刷新一次,供 GUI 展示)
+    private var selectedTempKeys: [SMCKey] = []      // 控制循环只读这些键
+    private var sweepTick = 0
 
     private var controlled = false
     private var lastWritten: [Int: Double] = [:]
@@ -440,12 +443,22 @@ final class Daemon {
     private func tickLocked() {
         guard ready, let writer = writer else { return }
         let cfg = config
-        let temps = smc.readTemperatures(cachedKeys: tempKeys)
+        // 全量温度扫描降频(每 4 轮一次,仅用于展示缓存);
+        // 控制温度只实时读选中的传感器,SMC 调用量从 ~200 次/轮降到 ~20 次/轮
+        sweepTick += 1
+        if sweepTick % 4 == 0 || tempCache.isEmpty {
+            tempCache = smc.readTemperatures(cachedKeys: tempKeys)
+            refreshSelectedKeys(cfg: cfg)
+        }
         guard let fans = try? smc.readFans() else {
             logger.log("读取风扇失败")
             return
         }
-        controlTemp = Self.controlTemperature(temps: temps, config: cfg)
+        var live = 0.0
+        for k in selectedTempKeys {
+            if let v = try? smc.readDouble(k), v > live { live = v }
+        }
+        controlTemp = live > 0 ? live : Self.controlTemperature(temps: tempCache, config: cfg)
 
         // 已停用:确保释放控制,其余只上报
         guard cfg.enabled, !fans.isEmpty else {
@@ -507,6 +520,14 @@ final class Daemon {
         return !fans.isEmpty && !fanVerified.values.contains(false)
     }
 
+    /// 依据配置(或默认集合)解析控制循环要实时读取的传感器键
+    private func refreshSelectedKeys(cfg: Config) {
+        let allNames = tempKeys.map(\.description)
+        let names = (cfg.sensors?.isEmpty == false) ? cfg.sensors! : SMC.defaultControlSensors(for: allNames)
+        let nameSet = Set(names)
+        selectedTempKeys = tempKeys.filter { nameSet.contains($0.description) }
+    }
+
     static func controlTemperature(temps: [SensorReading], config cfg: Config) -> Double {
         let selected: [String]
         if let s = cfg.sensors, !s.isEmpty {
@@ -532,6 +553,7 @@ final class Daemon {
                 if let c = req["config"] as? [String: Any] {
                     let patch = ConfigPatch(from: c)
                     config.apply(patch: patch)
+                    refreshSelectedKeys(cfg: config)
                     try? config.save()
                     logger.log("配置更新: \(c.keys.sorted().joined(separator: ","))")
                     return buildStatusLocked()
@@ -566,7 +588,7 @@ final class Daemon {
                 ])
             }
         }
-        let temps = smc.readTemperatures(cachedKeys: tempKeys)
+        let temps = tempCache
         var tempsDict = [String: Double]()
         for t in temps.prefix(60) { tempsDict[t.key] = t.value }
 

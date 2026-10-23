@@ -2,7 +2,7 @@
 # 打包分发版:通用二进制(Apple Silicon + Intel)+ DMG 安装包
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="1.0"
+VERSION="1.1"
 
 echo "==> 编译通用二进制(arm64 + x86_64)…"
 swift build -c release --arch arm64 --arch x86_64 --product FanBar
@@ -35,11 +35,13 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>
 </plist>
 EOF
 sed -i '' "s/VERSION_PLACEHOLDER/$VERSION/" "$APP/Contents/Info.plist"
 
+cp build-resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 codesign --force --sign "Local Dev Tools" "$APP" >/dev/null 2>&1 || codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 
 echo "==> 架构检查"

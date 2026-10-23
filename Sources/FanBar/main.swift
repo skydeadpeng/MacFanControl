@@ -46,6 +46,9 @@ final class FanModel: ObservableObject {
     @Published var sys: SystemStats.Snapshot?
     @Published var starting = false
     @Published var history: [HistPoint] = []
+    @Published var updateAvailable: String?
+    @Published var todayHigh: Double = 0
+    @Published var todayLow: Double = 0
     @Published var autoStart: Bool = AutoStart.installed {
         didSet {
             if autoStart { AutoStart.install() } else { AutoStart.uninstall() }
@@ -88,11 +91,54 @@ final class FanModel: ObservableObject {
 
     init() {
         loadTraffic()
+        loadTodayStats()
         timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.refresh()
         }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        checkForUpdate()
         refresh()
+    }
+
+    // MARK: 版本检查(GitHub Releases)
+
+    private func checkForUpdate() {
+        let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        guard let url = URL(string: "https://api.github.com/repos/skydeadpeng/MacFanControl/releases/latest") else { return }
+        var req = URLRequest(url: url, timeoutInterval: 10)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let data,
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let tag = obj["tag_name"] as? String else { return }
+            let latest = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+            if latest.compare(current, options: .numeric) == .orderedDescending {
+                DispatchQueue.main.async { self?.updateAvailable = tag }
+            }
+        }.resume()
+    }
+
+    // MARK: 今日温度统计
+
+    private func loadTodayStats() {
+        guard let dict = UserDefaults.standard.dictionary(forKey: "dayStats"),
+              (dict["date"] as? String) == Self.dayString else { return }
+        todayHigh = dict["high"] as? Double ?? 0
+        todayLow = dict["low"] as? Double ?? 0
+    }
+
+    private func updateTodayStats(_ t: Double) {
+        guard t > 1 else { return }
+        if todayHigh == 0 || t > todayHigh { todayHigh = t }
+        if todayLow == 0 || t < todayLow { todayLow = t }
+        UserDefaults.standard.set(["date": Self.dayString, "high": todayHigh, "low": todayLow],
+                                  forKey: "dayStats")
+    }
+
+    private static var dayString: String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date())
     }
 
     func refresh() {
@@ -183,7 +229,8 @@ final class FanModel: ObservableObject {
 
     private func appendHistory(temp: Double, cpu: Double, rpm: Double) {
         history.append(HistPoint(t: Date(), temp: temp, cpu: cpu * 100, rpm: rpm))
-        if history.count > 130 { history.removeFirst(history.count - 130) }
+        if history.count > 600 { history.removeFirst(history.count - 600) }   // 1.5s × 600 ≈ 15 分钟
+        updateTodayStats(temp)
     }
 
     // MARK: 快捷操作(右键菜单用)
@@ -821,6 +868,11 @@ struct SensorWindowView: View {
 struct PanelView: View {
     @EnvironmentObject var model: FanModel
     @State private var sensorsExpanded = false
+    @State private var procByMem = false
+
+    private func memText(_ mb: Double) -> String {
+        mb >= 1024 ? String(format: "%.1fG", mb / 1024) : String(format: "%.0fM", mb)
+    }
 
     private func openSensorWindow() {
         NSApp.activate(ignoringOtherApps: true)
@@ -840,6 +892,19 @@ struct PanelView: View {
             }
             if let msg = model.message {
                 Text(msg).font(.caption).foregroundStyle(.secondary)
+            }
+            if let v = model.updateAvailable {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
+                    Text("发现新版本 \(v)").font(.caption)
+                    Spacer()
+                    Button("查看") {
+                        if let url = URL(string: "https://github.com/skydeadpeng/MacFanControl/releases/latest") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .buttonStyle(.link).font(.caption)
+                }
             }
         }
         .padding(14)
@@ -892,31 +957,37 @@ struct PanelView: View {
                     }
                     Spacer()
                 }
-                if !sys.topProcs.isEmpty {
+                if !sys.topProcs.isEmpty || !sys.topMemProcs.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(sys.topProcs.enumerated()), id: \.offset) { _, p in
+                        ForEach(Array((procByMem ? sys.topMemProcs : sys.topProcs).enumerated()), id: \.offset) { _, p in
                             HStack {
                                 Text(p.name).lineLimit(1).truncationMode(.middle)
                                 Spacer(minLength: 6)
-                                Text(String(format: "%.0f%%", p.percent)).monospacedDigit()
+                                if !procByMem {
+                                    Text(String(format: "%.0f%%", p.percent)).monospacedDigit()
+                                }
+                                Text(memText(p.memMB)).monospacedDigit().foregroundStyle(.tertiary)
                             }
                             .contentShape(Rectangle())
                             .contextMenu {
                                 Button("结束进程(\(p.name))") {
                                     model.terminateProcess(p, force: false)
                                 }
-                                Button("强制退出(立即,不保存)", role: .destructive) {
+                                Button("强制退出(不可恢复)", role: .destructive) {
                                     model.terminateProcess(p, force: true)
                                 }
                             }
                         }
+                        HStack {
+                            Text("右击进程名可将其结束").foregroundStyle(.tertiary)
+                            Spacer()
+                            Button(procByMem ? "按CPU" : "按内存") { procByMem.toggle() }
+                        }
+                        .font(.caption2)
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.leading, 86)
-                    Text("右击进程名可将其结束")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                        .padding(.leading, 86)
                 }
                 HStack(spacing: 8) {
                     Text("内存").font(.caption).frame(width: 34, alignment: .leading)
@@ -1014,9 +1085,14 @@ struct PanelView: View {
                         Text("— CPU%").foregroundStyle(.blue)
                         Text("— 风扇RPM").foregroundStyle(.green)
                         Spacer()
-                        Text("近 3 分钟").foregroundStyle(.secondary)
+                        if model.todayHigh > 0 {
+                            Text(String(format: "近15分钟 · 今日 %.0f–%.0f°C", model.todayLow, model.todayHigh))
+                        } else {
+                            Text("近 15 分钟")
+                        }
                     }
                     .font(.caption2)
+                    .foregroundStyle(Color.secondary)
                 }
             }
         }
