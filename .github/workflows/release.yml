@@ -40,14 +40,29 @@ jobs:
           swift build -c release --arch arm64 --arch x86_64 --product fanctl
 
       - name: Package DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           ./package-dist.sh > /tmp/pkg.log 2>&1
           code=$?
           if [ $code -ne 0 ]; then
+            echo "=== 环境诊断 ===" >> /tmp/pkg.log
+            {
+              sw_vers
+              xcodebuild -version
+              swift build --version
+              echo "--- 内存 ---"; vm_stat | head -8; sysctl hw.memsize
+              echo "--- 磁盘 ---"; df -h / | tail -2
+              echo "--- 日志末尾 80 行 ---"
+              tail -80 /tmp/pkg.log
+            } >> /tmp/pkg.log 2>&1
             tail -30 /tmp/pkg.log | while IFS= read -r line; do
               echo "::error::[pkg] ${line:0:200}"
             done
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/ci-pkg-$GITHUB_RUN_ID.log" \
+              -f message="ci pkg log $GITHUB_RUN_ID" \
+              -f content="$(base64 -i /tmp/pkg.log)" > /dev/null || true
             exit 1
           fi
 
