@@ -12,7 +12,8 @@ mkdir -p "$OUT"
 echo "==> swiftc 编译小组件(universal)…"
 SRCS=(Sources/Widget/FanWidget.swift Sources/SMCKit/*.swift Sources/FanBar/SystemStats.swift)
 FLAGS=(-O -whole-module-optimization -parse-as-library -sdk "$SDK"
-       -F /System/Library/PrivateFrameworks -framework FrontBoardServices
+       -Xlinker -F -Xlinker /System/Library/PrivateFrameworks
+       -Xlinker -framework -Xlinker FrontBoardServices
        -framework WidgetKit -framework SwiftUI -framework IOKit)
 swiftc "${FLAGS[@]}" -target arm64-apple-macos14.0 "${SRCS[@]}" -o "$OUT/FanWidget-arm64"
 swiftc "${FLAGS[@]}" -target x86_64-apple-macos14.0 "${SRCS[@]}" -o "$OUT/FanWidget-x86_64"
