@@ -1,0 +1,136 @@
+==> 编译通用二进制(arm64 + x86_64)…
+0%: Compute target dependency graph
+Building targets in dependency order
+Target dependency graph (2 targets)
+0%: Gather provisioning inputs
+0%: Create build description
+0%: Discovering version info for swiftc
+0%: Discovering version info for clang
+0%: Discovering version info for ld
+Build description signature: 30b6058d115e96b8e4ea8f1aab4dc7fc
+
+Build description path: /Users/runner/work/MacFanControl/MacFanControl/.build/apple/Intermediates.noindex/XCBuildData/30b6058d115e96b8e4ea8f1aab4dc7fc.xcbuilddata
+
+0%: Build stat cache for /Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
+100%: Build succeeded
+Build complete!
+0%: Compute target dependency graph
+Building targets in dependency order
+Target dependency graph (2 targets)
+0%: Gather provisioning inputs
+0%: Create build description
+0%: Discovering version info for swiftc
+0%: Discovering version info for clang
+0%: Discovering version info for ld
+Build description signature: 5761ae0bbfe976148fefff3436c43e17
+
+Build description path: /Users/runner/work/MacFanControl/MacFanControl/.build/apple/Intermediates.noindex/XCBuildData/5761ae0bbfe976148fefff3436c43e17.xcbuilddata
+
+0%: Build stat cache for /Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
+100%: Build succeeded
+Build complete!
+==> swiftc 编译小组件(universal)…
+<module-includes>:1:9: note: in file included from <module-includes>:1:
+1 | #import "Headers/ExtensionFoundation.h"
+  |         `- note: in file included from <module-includes>:1:
+2 | 
+
+/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/ExtensionFoundation.framework/Headers/ExtensionFoundation.h:9:9: error: 'ExtensionFoundation/EXMacros.h' file not found
+ 7 | #define ExtensionFoundation_h
+ 8 | 
+ 9 | #import <ExtensionFoundation/EXMacros.h>
+   |         |- error: 'ExtensionFoundation/EXMacros.h' file not found
+   |         `- note: did not find header 'EXMacros.h' in framework 'ExtensionFoundation' (loaded from '/System/Library/PrivateFrameworks')
+10 | 
+11 | 
+
+<unknown>:0: error: could not build Objective-C module 'ExtensionFoundation'
+=== 环境诊断 ===
+ProductName:		macOS
+ProductVersion:		26.6.2
+BuildVersion:		25G83
+Xcode 26.6
+Build version 17F113
+Swift Package Manager - Swift 6.3.3
+--- 内存 ---
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    34839.
+Pages active:                                 149879.
+Pages inactive:                               141291.
+Pages speculative:                             12861.
+Pages throttled:                                   0.
+Pages wired down:                              85724.
+Pages purgeable:                                 494.
+hw.memsize: 7516192768
+--- 磁盘 ---
+Filesystem        Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk2s1s1   320Gi    12Gi    96Gi    11%    459k  1.0G    0%   /
+--- 日志末尾 80 行 ---
+==> 编译通用二进制(arm64 + x86_64)…
+0%: Compute target dependency graph
+Building targets in dependency order
+Target dependency graph (2 targets)
+0%: Gather provisioning inputs
+0%: Create build description
+0%: Discovering version info for swiftc
+0%: Discovering version info for clang
+0%: Discovering version info for ld
+Build description signature: 30b6058d115e96b8e4ea8f1aab4dc7fc
+
+Build description path: /Users/runner/work/MacFanControl/MacFanControl/.build/apple/Intermediates.noindex/XCBuildData/30b6058d115e96b8e4ea8f1aab4dc7fc.xcbuilddata
+
+0%: Build stat cache for /Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
+100%: Build succeeded
+Build complete!
+0%: Compute target dependency graph
+Building targets in dependency order
+Target dependency graph (2 targets)
+0%: Gather provisioning inputs
+0%: Create build description
+0%: Discovering version info for swiftc
+0%: Discovering version info for clang
+0%: Discovering version info for ld
+Build description signature: 5761ae0bbfe976148fefff3436c43e17
+
+Build description path: /Users/runner/work/MacFanControl/MacFanControl/.build/apple/Intermediates.noindex/XCBuildData/5761ae0bbfe976148fefff3436c43e17.xcbuilddata
+
+0%: Build stat cache for /Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
+100%: Build succeeded
+Build complete!
+==> swiftc 编译小组件(universal)…
+<module-includes>:1:9: note: in file included from <module-includes>:1:
+1 | #import "Headers/ExtensionFoundation.h"
+  |         `- note: in file included from <module-includes>:1:
+2 | 
+
+/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/ExtensionFoundation.framework/Headers/ExtensionFoundation.h:9:9: error: 'ExtensionFoundation/EXMacros.h' file not found
+ 7 | #define ExtensionFoundation_h
+ 8 | 
+ 9 | #import <ExtensionFoundation/EXMacros.h>
+   |         |- error: 'ExtensionFoundation/EXMacros.h' file not found
+   |         `- note: did not find header 'EXMacros.h' in framework 'ExtensionFoundation' (loaded from '/System/Library/PrivateFrameworks')
+10 | 
+11 | 
+
+<unknown>:0: error: could not build Objective-C module 'ExtensionFoundation'
+=== 环境诊断 ===
+ProductName:		macOS
+ProductVersion:		26.6.2
+BuildVersion:		25G83
+Xcode 26.6
+Build version 17F113
+Swift Package Manager - Swift 6.3.3
+--- 内存 ---
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    34839.
+Pages active:                                 149879.
+Pages inactive:                               141291.
+Pages speculative:                             12861.
+Pages throttled:                                   0.
+Pages wired down:                              85724.
+Pages purgeable:                                 494.
+hw.memsize: 7516192768
+--- 磁盘 ---
+Filesystem        Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk2s1s1   320Gi    12Gi    96Gi    11%    459k  1.0G    0%   /
+--- 日志末尾 80 行 ---
