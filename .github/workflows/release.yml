@@ -56,3 +56,5 @@ jobs:
         with:
           files: dist/*.dmg
           generate_release_notes: true
+
+# 注:v3.1.0 首次构建 runner 在 swift build 计划阶段无输出即挂(疑似 runner 资源问题),重触发验证
