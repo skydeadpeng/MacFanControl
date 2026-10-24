@@ -66,6 +66,9 @@ final class FanModel: ObservableObject {
     var openSensors: (() -> Void)?
     /// 打开"7 天趋势"窗口
     var openTrend: (() -> Void)?
+    /// UI 是否可见(AppDelegate 注入:popover/传感器窗/趋势窗任一在前台)。
+    /// 不可见时走轻量采样(不扫进程榜/GPU/磁盘 IO),大幅降低常驻 CPU
+    var uiVisible: (() -> Bool)?
 
     // 高温报警(UserDefaults 持久化)
     @Published var alarmEnabled: Bool = UserDefaults.standard.object(forKey: "alarmEnabled") as? Bool ?? true {
@@ -98,6 +101,7 @@ final class FanModel: ObservableObject {
     private var timer: Timer?
     private var refreshing = false
     private var widgetReloadCounter = 0
+    private var tickCount = 0
 
     /// 菜单栏标题(按自选指标组合渲染;temp/cpu/gpu/mem/net/battery/power)
     var statusText: String {
@@ -146,10 +150,19 @@ final class FanModel: ObservableObject {
         loadHistory()
         loadTrend()
         timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            self?.refresh()
+            guard let self else { return }
+            self.tickCount += 1
+            // 面板/窗口都不可见时降频到 3 秒一拍(菜单栏文字 3 秒粒度足够)
+            if self.uiVisible?() ?? true || self.tickCount % 2 == 0 {
+                self.refresh()
+            }
         }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         checkForUpdate()
+        // 每 6 小时复查一次新版本
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            self?.checkForUpdate()
+        }
         refresh()
     }
 
@@ -232,7 +245,7 @@ final class FanModel: ObservableObject {
     }
 
     func refresh() {
-        let s = stats.sample()
+        let s = stats.sample(full: uiVisible?() ?? true)
         sys = s
         accumulateTraffic(s)
         checkBattery(s.battery)
@@ -351,14 +364,17 @@ final class FanModel: ObservableObject {
     }
 
     private func appendHistory(temp: Double, cpu: Double, rpm: Double) {
-        let gpu = Double(sys?.gpuUsage ?? 0)
-        history.append(HistPoint(t: Date(), temp: temp, cpu: cpu * 100, gpu: gpu, rpm: rpm))
+        // 轻量采样期 GPU 为 nil,沿用上次值,曲线不断崖
+        if let g = sys?.gpuUsage { lastKnownGPU = Double(g) }
+        history.append(HistPoint(t: Date(), temp: temp, cpu: cpu * 100, gpu: lastKnownGPU, rpm: rpm))
         if history.count > 600 { history.removeFirst(history.count - 600) }   // 1.5s × 600 ≈ 15 分钟
         updateDayStats(temp: temp, cpu: cpu * 100)
-        updateHourlyTrend(temp: temp, cpu: cpu * 100, gpu: gpu, fanRPM: rpm)
+        updateHourlyTrend(temp: temp, cpu: cpu * 100, gpu: lastKnownGPU, fanRPM: rpm)
         histSaveCounter += 1
         if histSaveCounter % 20 == 0 { persistHistoryAndTrend() }
     }
+
+    private var lastKnownGPU = 0.0
 
     // MARK: 历史与 7 天逐小时趋势持久化(跨重启连续)
 
@@ -465,23 +481,24 @@ final class FanModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.message = nil }
     }
 
-    // MARK: 电池充电提醒(充满/低电量通知,不写任何硬件)
+    // MARK: 电池充电提醒(充到 80% 提醒一次;拔电或降到 60% 以下重新武装,避免快充跨窗口漏报)
 
-    private var lastChargingState: Bool?
+    private var chargeAlertArmed = true
     private var lastLowNotify = Date.distantPast
 
     private func checkBattery(_ b: SystemStats.BatteryInfo) {
         guard b.present else { return }
-        if b.charging && b.percent >= 80 && lastChargingState == true && b.percent < 85 {
-            notify("⚡ 已充到 \(Int(b.percent))%", "长时间插电建议拔掉电源,保护电池健康")
-            lastChargingState = nil
+        if !b.charging || b.percent < 60 { chargeAlertArmed = true }
+        if b.charging && chargeAlertArmed && b.percent >= 80 {
+            chargeAlertArmed = false
+            notify(L.t("⚡ 已充到 \(Int(b.percent))%", "⚡ Charged to \(Int(b.percent))%"),
+                   L.t("长时间插电建议拔掉电源,保护电池健康", "Unplug to protect battery health for long sessions"))
         }
         if !b.onAC && b.percent <= 20 && Date().timeIntervalSince(lastLowNotify) > 1800 {
             lastLowNotify = Date()
-            notify("🔋 电量 \(Int(b.percent))%", "电量不足,请尽快连接电源")
+            notify(L.t("🔋 电量 \(Int(b.percent))%", "🔋 Battery \(Int(b.percent))%"),
+                   L.t("电量不足,请尽快连接电源", "Low battery — connect power soon"))
         }
-        if b.charging { lastChargingState = true }
-        if !b.charging && b.percent < 100 { lastChargingState = false }
     }
 
     private func notify(_ title: String, _ body: String) {
@@ -633,7 +650,9 @@ final class FanModel: ObservableObject {
         lastAlarmAt = Date()
         let content = UNMutableNotificationContent()
         content.title = L.t("温度过高", "High temperature")
-        content.body = String(format: "控制温度已达 %.0f°C(报警阈值 %.0f°C),风扇正按曲线散热", controlTemp, alarmTemp)
+        content.body = String(format: L.t("控制温度已达 %.0f°C(报警阈值 %.0f°C),风扇正按曲线散热",
+                                          "Control temp %.0f°C (alert at %.0f°C), fans ramping per curve"),
+                              controlTemp, alarmTemp)
         content.sound = .default
         let request = UNNotificationRequest(identifier: "temp-\(Int(Date().timeIntervalSince1970))",
                                             content: content, trigger: nil)
@@ -939,15 +958,9 @@ struct FanBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
 var body: some Scene {
-    Settings {
-        ScrollView {
-            PanelView()
-                .environmentObject(appDelegate.model)
-                .padding(.vertical, 6)
-        }
-        .navigationTitle("MacFanControl 设置")
-        .frame(minWidth: 372, minHeight: 460)
-    }
+    // Settings 场景内容在启动时就会被实例化并订阅模型更新——绝不能放 PanelView
+    // (面板/图表窗口全部按需创建、关闭即释放,见 AppDelegate)
+    Settings { EmptyView() }
 }
 }
 
@@ -957,6 +970,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover?
     private var sensorWindow: NSWindow?
     private var trendWindow: NSWindow?
+    private var settingsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -967,6 +981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let host = NSHostingController(rootView: PanelView().environmentObject(model))
         let popover = NSPopover()
         popover.behavior = .transient          // 点外部自动关闭
+        popover.delegate = self                // 关闭时卸下 SwiftUI 视图树(否则常驻布局刷新白耗 CPU)
         popover.contentViewController = host
         self.popover = popover
 
@@ -981,6 +996,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         model.openSensors = { [weak self] in self?.openSensorWindow() }
         model.openTrend = { [weak self] in self?.openTrendWindow() }
+        model.uiVisible = { [weak self] in
+            guard let self else { return true }
+            return self.uiVisible
+        }
 
         Publishers.CombineLatest4(model.$sys, model.$controlTemp, model.$daemonOnline, model.$titleItems)
             .receive(on: DispatchQueue.main)
@@ -1042,17 +1061,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var uiVisible: Bool {
+        popover?.isShown == true
+            || sensorWindow?.isVisible == true
+            || trendWindow?.isVisible == true
+            || settingsWindow?.isVisible == true
+    }
+
     private func updateTitle() {
         guard let button = statusItem?.button else { return }
-        // 等宽数字:数值变化时标题宽度不抖动
-        button.attributedTitle = NSAttributedString(
-            string: model.statusText,
-            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)])
-        // 高温时换用高温计图标作提示
+        // 文本没变就不重设(省一次状态栏重排/CA 提交)
+        let text = model.statusText
+        if button.title != text {
+            button.attributedTitle = NSAttributedString(
+                string: text,
+                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)])
+        }
+        // 高温时换用高温计图标作提示(两张图缓存复用,不每拍重建)
         let hot = model.controlTemp >= (model.alarmEnabled ? model.alarmTemp : 95)
-        let symbol = hot ? "thermometer.high" : "thermometer.medium"
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "温度")
+        let name = hot ? "thermometer.high" : "thermometer.medium"
+        if titleIconName != name {
+            titleIconName = name
+            button.image = NSImage(systemSymbolName: name, accessibilityDescription: "温度")
+        }
     }
+
+    private var titleIconName: String?
 
     @objc private func togglePopover() {
         if let ev = NSApp.currentEvent, ev.type == .rightMouseUp {
@@ -1064,10 +1098,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
             return
         }
-        // 每次打开前按当前内容自适应高度
-        if let host = popover.contentViewController {
-            popover.contentSize = host.view.fittingSize
-        }
+        // 每次打开重建内容(popover 关闭期间视图树被卸下,模型刷新不再驱动隐藏布局)
+        let host = NSHostingController(rootView: PanelView().environmentObject(model))
+        popover.contentViewController = host
+        popover.contentSize = host.view.fittingSize
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -1125,9 +1159,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quickCopy() { model.copyStatus() }
     @objc private func quickCSV() { model.exportCSV() }
     @objc private func openSettingsWindow() {
+        if settingsWindow == nil {
+            let host = NSHostingController(rootView: ScrollView {
+                PanelView().environmentObject(model).padding(.vertical, 6)
+            })
+            let window = NSWindow(contentViewController: host)
+            window.title = "MacFanControl 设置"
+            window.styleMask.insert(.resizable)
+            window.contentMinSize = NSSize(width: 372, height: 460)
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            settingsWindow = window
+        }
         NSApp.activate(ignoringOtherApps: true)
-        if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) { return }
-        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
     @objc private func quitApp() { NSApp.terminate(nil) }
 
@@ -1139,6 +1184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.styleMask.insert(.resizable)
             window.contentMinSize = NSSize(width: 440, height: 400)
             window.isReleasedWhenClosed = false
+            window.delegate = self
             sensorWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -1153,11 +1199,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.styleMask.insert(.resizable)
             window.contentMinSize = NSSize(width: 720, height: 380)
             window.isReleasedWhenClosed = false
+            window.delegate = self
             trendWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
         trendWindow?.makeKeyAndOrderFront(nil)
     }
+
+    // MARK: NSWindowDelegate(窗口关闭即释放 SwiftUI 视图树,避免隐藏窗口继续吃布局开销)
 
     func applicationWillTerminate(_ notification: Notification) {
         appendLifeLog("退出(用户或系统终止)")
@@ -1176,6 +1225,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? h.close()
             }
         }
+    }
+}
+
+extension AppDelegate: NSPopoverDelegate {
+    /// 关闭即卸下 SwiftUI 视图树:面板不可见时模型每 1.5s 的发布不再触发隐藏布局
+    func popoverDidClose(_ notification: Notification) {
+        popover?.contentViewController = NSHostingController(rootView: Color.clear.frame(width: 340, height: 100))
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        let win = notification.object as? NSWindow
+        if win === sensorWindow { sensorWindow = nil }
+        if win === trendWindow { trendWindow = nil }
+        if win === settingsWindow { settingsWindow = nil }
     }
 }
 

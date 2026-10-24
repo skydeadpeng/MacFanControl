@@ -51,6 +51,7 @@ final class SystemStats {
     private var lastNetOut: UInt64 = 0
     private var lastDiskRead: UInt64 = 0
     private var lastDiskWrite: UInt64 = 0
+    private var lastDiskSpace: (UInt64, UInt64) = (0, 0)
     private var lastProcTimes: [Int32: UInt64] = [:]
     private var lastTime: Date?
 
@@ -66,7 +67,9 @@ final class SystemStats {
         memTotalCache = v
     }
 
-    func sample() -> Snapshot {
+    /// 采样;full=false 为轻量模式(面板不可见时):跳过进程榜/GPU/磁盘 IO 等重开销项
+    /// (proc_pidinfo 要遍历全部进程、IOKit 注册表读取也贵,菜单栏标题用不到它们)
+    func sample(full: Bool = true) -> Snapshot {
         let now = Date()
         let hadPrev = lastTime != nil
         let elapsed = max(0.2, now.timeIntervalSince(lastTime ?? now))
@@ -102,20 +105,23 @@ final class SystemStats {
         lastNetOut = outBytes
 
         // 硬盘
-        let (diskTotal, diskUsed) = sampleDiskSpace()
-        let (readBytes, writeBytes) = sampleDiskBytes()
+        let (diskTotal, diskUsed) = full ? sampleDiskSpace() : (lastDiskSpace.0, lastDiskSpace.1)
+        let (readBytes, writeBytes) = full ? sampleDiskBytes() : (lastDiskRead, lastDiskWrite)
         var diskRead = 0.0, diskWrite = 0.0
-        if hadPrev {
+        if hadPrev && full {
             diskRead = Double(readBytes > lastDiskRead ? readBytes - lastDiskRead : 0) / elapsed
             diskWrite = Double(writeBytes > lastDiskWrite ? writeBytes - lastDiskWrite : 0) / elapsed
         }
+        if full { lastDiskSpace = (diskTotal, diskUsed) }
         lastDiskRead = readBytes
         lastDiskWrite = writeBytes
         lastTime = now
 
         let battery = sampleBattery()
-        let (topCPU, topMem) = sampleTopProcesses(n: 5, hasPrev: hadPrev, totalCPU: cpuUsage)
-        let gpu = sampleGPU()
+        let (topCPU, topMem) = full
+            ? sampleTopProcesses(n: 5, hasPrev: hadPrev, totalCPU: cpuUsage)
+            : ([], [])
+        let gpu = full ? sampleGPU() : nil
 
         return Snapshot(cpuUsage: cpuUsage, coreUsages: coreUsages,
                         memTotal: memTotalCache, memUsed: memUsed,
