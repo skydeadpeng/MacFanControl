@@ -50,8 +50,8 @@ WIDGET_VERSION="$VERSION" ./tools/build-widget.sh
 mkdir -p "$APP/Contents/PlugIns"
 cp -R build/widget/FanWidget.appex "$APP/Contents/PlugIns/"
 
-# 先签内嵌小组件,再签外层 app
-codesign --force --sign "Local Dev Tools" "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || codesign --force --sign - "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || true
+# 先签内嵌小组件(必须带沙盒 entitlements)再签外层 app
+codesign --force --sign "Local Dev Tools" --entitlements build-resources/FanWidget.entitlements "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || codesign --force --sign - --entitlements build-resources/FanWidget.entitlements "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || true
 codesign --force --sign "Local Dev Tools" "$APP" >/dev/null 2>&1 || codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 
 echo "==> 架构检查"

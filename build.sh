@@ -44,7 +44,7 @@ EOF
 # 优先用固定证书签名(TCC 授权才能跨构建保持),证书不存在则退回临时签名
 # 注意顺序:先签内嵌小组件,再签外层 app
 cp build-resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
-codesign --force --sign "Local Dev Tools" "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || codesign --force --sign - "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || true
+codesign --force --sign "Local Dev Tools" --entitlements build-resources/FanWidget.entitlements "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || codesign --force --sign - --entitlements build-resources/FanWidget.entitlements "$APP/Contents/PlugIns/FanWidget.appex" >/dev/null 2>&1 || true
 codesign --force --sign "Local Dev Tools" "$APP" >/dev/null 2>&1 || codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 
 echo ""

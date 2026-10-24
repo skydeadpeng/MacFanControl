@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- WidgetKit 注册的硬性门槛:小组件扩展必须带 app-sandbox(pluginkit 静默拒收无沙盒的 appex) -->
+    <key>com.apple.security.app-sandbox</key><true/>
+    <!-- 沙盒内读 SMC 温度需要临时豁免 AppleSMC 用户客户端 -->
+    <key>com.apple.security.temporary-exception.iokit-user-client-class</key>
+    <array><string>AppleSMC</string></array>
+</dict>
+</plist>

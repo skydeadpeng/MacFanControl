@@ -12,6 +12,7 @@ mkdir -p "$OUT"
 echo "==> swiftc 编译小组件(universal)…"
 SRCS=(Sources/Widget/FanWidget.swift Sources/SMCKit/*.swift Sources/FanBar/SystemStats.swift)
 FLAGS=(-O -whole-module-optimization -parse-as-library -sdk "$SDK"
+       -F /System/Library/PrivateFrameworks -framework FrontBoardServices
        -framework WidgetKit -framework SwiftUI -framework IOKit)
 swiftc "${FLAGS[@]}" -target arm64-apple-macos14.0 "${SRCS[@]}" -o "$OUT/FanWidget-arm64"
 swiftc "${FLAGS[@]}" -target x86_64-apple-macos14.0 "${SRCS[@]}" -o "$OUT/FanWidget-x86_64"
@@ -33,8 +34,12 @@ cat > "$APPEX/Contents/Info.plist" <<'EOF'
     <key>CFBundleExecutable</key><string>FanWidget</string>
     <key>CFBundlePackageType</key><string>XPC!</string>
     <key>CFBundleShortVersionString</key><string>VERSION_PLACEHOLDER</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>31</string>
     <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array><string>MacOSX</string></array>
+    <key>DTPlatformName</key><string>macosx</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSExtension</key>
     <dict>
@@ -43,6 +48,7 @@ cat > "$APPEX/Contents/Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
-sed -i '' "s/VERSION_PLACEHOLDER/${WIDGET_VERSION:-3.0}/" "$APPEX/Contents/Info.plist"
+sed -i '' "s/VERSION_PLACEHOLDER/${WIDGET_VERSION:-3.1}/" "$APPEX/Contents/Info.plist"
 
 echo "✅ 小组件已构建: $APPEX"
+echo "   (嵌入后签名必须带 build-resources/FanWidget.entitlements,缺 app-sandbox 会被系统拒收)"
