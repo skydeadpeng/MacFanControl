@@ -2,7 +2,12 @@
 # 打包分发版:通用二进制(Apple Silicon + Intel)+ DMG 安装包
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="3.0"
+# 版本号:CI 传 PACKAGE_VERSION(取自 tag),本地默认 3.1
+VERSION="${PACKAGE_VERSION:-3.1}"
+case "$VERSION" in
+  *.*) ;;              # 形如 3.1 / 3.1.0 才有效
+  *) VERSION="3.1" ;;  # workflow_dispatch 等场景 ref_name 不是版本号
+esac
 
 echo "==> 编译通用二进制(arm64 + x86_64)…"
 swift build -c release --arch arm64 --arch x86_64 --product FanBar

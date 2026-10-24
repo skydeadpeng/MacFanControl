@@ -44,6 +44,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
+          export PACKAGE_VERSION="${GITHUB_REF_NAME#v}"
           ./package-dist.sh > /tmp/pkg.log 2>&1
           code=$?
           if [ $code -ne 0 ]; then
